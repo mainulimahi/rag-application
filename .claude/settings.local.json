@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(Start-Sleep -Seconds 8)",
+      "Bash(d:/rag-application/backend/venv/Scripts/alembic upgrade *)",
+      "Bash(docker exec *)"
+    ]
+  }
+}
