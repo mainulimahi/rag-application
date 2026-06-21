@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.db.base import Base  # noqa: E402
 from app.models import user  # noqa: F401 — registers User with Base.metadata for autogenerate
+from app.models import chat  # noqa: F401 — registers ChatThread, ChatMessage with Base.metadata
+from app.models import document  # noqa: F401 — registers Document with Base.metadata
 
 config = context.config
 
@@ -26,6 +28,16 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+# Tables managed entirely with raw SQL (e.g. pgvector types the ORM can't describe).
+# Excluding them prevents autogenerate from emitting spurious drop/recreate statements.
+_AUTOGENERATE_EXCLUDE_TABLES = {"document_chunks"}
+
+
+def include_object(object, name, type_, reflected, compare_to):  # noqa: A002
+    if type_ == "table" and name in _AUTOGENERATE_EXCLUDE_TABLES:
+        return False
+    return True
 
 
 def get_url() -> str:
@@ -43,6 +55,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -59,6 +72,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            include_object=include_object,
         )
         with context.begin_transaction():
             context.run_migrations()

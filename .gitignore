@@ -1,5 +1,6 @@
 # ─── Secrets ──────────────────────────────────────────────────────────────────
-.env
+# /.env (with leading slash) only ignores the root .env, not frontend/.env or others.
+/.env
 *.env.local
 
 # ─── Python ───────────────────────────────────────────────────────────────────
