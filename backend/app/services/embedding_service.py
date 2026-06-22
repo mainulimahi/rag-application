@@ -39,6 +39,7 @@ class GeminiEmbeddingProvider:
         self._client = GoogleGenerativeAIEmbeddings(
             model=model,
             google_api_key=api_key,
+            output_dimensionality=768,  # must match vector(768) column in document_chunks
         )
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:

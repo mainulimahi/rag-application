@@ -9,11 +9,23 @@ Processing flow:
   2. save_document()          — persist the raw file with status='processing'
   3. process_document()       — extract → chunk → embed → save chunks, then mark ready/failed
      Called as a FastAPI BackgroundTask so the upload endpoint responds immediately.
+
+Supported formats:
+  PDF   — pymupdf (fitz): handles text-heavy, LaTeX-generated, and multi-column PDFs.
+  DOCX  — python-docx: paragraphs + table cells.
+  TXT / MD — decoded as UTF-8 (latin-1 fallback).
+  JSON  — parsed and pretty-printed so it's readable in chunks.
+  XLSX  — openpyxl: sheets → rows → cells.
+  CSV   — stdlib csv module.
+  DOC / XLS — legacy formats; accepted at validation but rejected at extraction with a
+              clear message asking the user to convert.
 """
 
 from __future__ import annotations
 
+import csv
 import io
+import json
 import logging
 from uuid import UUID
 
@@ -21,7 +33,7 @@ import sqlalchemy as sa
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.document import Document
+from app.models.document import Document, DocumentChunk
 from app.services.embedding_service import get_embedding_provider
 
 logger = logging.getLogger(__name__)
@@ -32,12 +44,28 @@ MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 ALLOWED_CONTENT_TYPES = {
     "application/pdf",
+    # DOCX
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    # DOC (legacy Word) — accepted here; extraction will reject with a clear message
+    "application/msword",
     "text/plain",
     "text/markdown",
+    "application/json",
+    "text/json",
+    # XLSX
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    # XLS (legacy Excel) — accepted here; extraction will reject with a clear message
+    "application/vnd.ms-excel",
+    "text/csv",
+    "application/csv",
+    # Browsers often send these for .md / .txt / .csv files
+    "application/octet-stream",
+    "text/x-markdown",
 }
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".docx", ".doc", ".txt", ".md", ".json", ".xlsx", ".xls", ".csv"
+}
 
 # ~500 tokens per chunk with ~100 token overlap (4 chars ≈ 1 token heuristic).
 _splitter = RecursiveCharacterTextSplitter(
@@ -48,6 +76,9 @@ _splitter = RecursiveCharacterTextSplitter(
 
 # Embed at most this many chunks per API call to stay under Gemini batch limits.
 _EMBED_BATCH_SIZE = 20
+
+# Warn when extraction yields fewer than this many characters — likely a problem.
+_SPARSE_TEXT_THRESHOLD = 100
 
 
 # ── Validation ─────────────────────────────────────────────────────────────────
@@ -63,11 +94,17 @@ def validate_file(filename: str, content_type: str, file_size: int) -> None:
     ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
-        raise ValueError(f"Unsupported file type '{ext}'. Allowed: {allowed}")
-
-    if content_type not in ALLOWED_CONTENT_TYPES:
         raise ValueError(
-            f"Unsupported content type '{content_type}'. Upload PDF, DOCX, TXT, or MD files."
+            f"Unsupported file type '{ext}'. "
+            f"Allowed: {allowed}"
+        )
+
+    # Strip charset suffix (e.g. "text/plain; charset=utf-8") before comparing.
+    ct = content_type.lower().split(";")[0].strip()
+    if ct not in ALLOWED_CONTENT_TYPES:
+        raise ValueError(
+            f"Unsupported content type '{content_type}'. "
+            f"Upload PDF, DOCX, DOC, TXT, MD, JSON, XLSX, XLS, or CSV files."
         )
 
     if file_size > MAX_FILE_SIZE_BYTES:
@@ -82,63 +119,168 @@ def extract_text(file_data: bytes, filename: str, content_type: str) -> str:
     """
     Extract plain text from an uploaded file.
 
-    Dispatches by content type (with filename extension as fallback).
-    Raises ValueError with a descriptive message on extraction failure.
+    Dispatches primarily by file extension (most reliable), with content_type
+    as confirmation. Raises ValueError with a descriptive message on failure.
     """
-    is_pdf = (
-        content_type == "application/pdf"
-        or filename.lower().endswith(".pdf")
-    )
-    is_docx = (
-        content_type
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        or filename.lower().endswith(".docx")
-    )
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
 
-    if is_pdf:
+    if ext == ".pdf":
         return _extract_pdf(file_data)
-    if is_docx:
+    if ext == ".docx":
         return _extract_docx(file_data)
+    if ext == ".doc":
+        raise ValueError(
+            "Legacy .doc format is not supported. "
+            "Please re-save the file as .docx (Word 2007+ format) and re-upload."
+        )
+    if ext in (".txt", ".md"):
+        return _extract_plain_text(file_data)
+    if ext == ".json":
+        return _extract_json(file_data)
+    if ext == ".xlsx":
+        return _extract_xlsx(file_data)
+    if ext == ".xls":
+        raise ValueError(
+            "Legacy .xls format is not supported. "
+            "Please convert the file to .xlsx (Excel 2007+ format) and re-upload."
+        )
+    if ext == ".csv":
+        return _extract_csv(file_data)
 
-    # TXT / MD — try UTF-8 then fall back to latin-1 for Windows-authored files.
-    try:
-        return file_data.decode("utf-8")
-    except UnicodeDecodeError:
-        return file_data.decode("latin-1")
+    # Fallback for files whose extension slipped past validate_file (shouldn't happen).
+    raise ValueError(
+        f"Cannot extract text from '{ext}' files. "
+        f"Supported: pdf, docx, txt, md, json, xlsx, csv."
+    )
 
 
 def _extract_pdf(file_data: bytes) -> str:
+    """Extract text from PDF using pymupdf (fitz). Handles LaTeX and multi-column PDFs."""
     try:
-        import pypdf  # lazy import — only needed for PDF files
+        import fitz  # pymupdf
 
-        reader = pypdf.PdfReader(io.BytesIO(file_data))
-        pages = [page.extract_text() or "" for page in reader.pages]
+        doc = fitz.open(stream=file_data, filetype="pdf")
+        pages = [page.get_text() for page in doc]
+        doc.close()
         text = "\n".join(p for p in pages if p.strip()).strip()
-        if not text:
-            raise ValueError(
-                "PDF contains no extractable text. It may be image-only or scanned."
-            )
-        return text
-    except ValueError:
-        raise
     except Exception as exc:
         raise ValueError(f"PDF extraction failed: {exc}") from exc
 
+    if len(text) < _SPARSE_TEXT_THRESHOLD:
+        logger.warning(
+            "PDF extraction yielded very little text (%d chars) — "
+            "the file may be image-only or contain no selectable text.",
+            len(text),
+        )
+    if not text:
+        raise ValueError(
+            "PDF contains no extractable text. "
+            "It may be image-only or scanned without OCR."
+        )
+    return text
+
 
 def _extract_docx(file_data: bytes) -> str:
+    """Extract text from DOCX including table cells."""
     try:
-        import docx  # lazy import — only needed for DOCX files (installed as python-docx)
+        import docx
 
         doc = docx.Document(io.BytesIO(file_data))
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-        text = "\n".join(paragraphs).strip()
-        if not text:
-            raise ValueError("DOCX contains no extractable text.")
-        return text
-    except ValueError:
-        raise
+        parts: list[str] = []
+
+        for p in doc.paragraphs:
+            if p.text.strip():
+                parts.append(p.text)
+
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(
+                    cell.text.strip() for cell in row.cells if cell.text.strip()
+                )
+                if row_text:
+                    parts.append(row_text)
+
+        text = "\n".join(parts).strip()
     except Exception as exc:
         raise ValueError(f"DOCX extraction failed: {exc}") from exc
+
+    if len(text) < _SPARSE_TEXT_THRESHOLD:
+        logger.warning("DOCX extraction yielded very little text (%d chars).", len(text))
+    if not text:
+        raise ValueError("DOCX contains no extractable text.")
+    return text
+
+
+def _extract_plain_text(file_data: bytes) -> str:
+    """Decode TXT / MD as UTF-8 with latin-1 fallback for Windows-authored files."""
+    try:
+        text = file_data.decode("utf-8", errors="replace")
+    except Exception:
+        text = file_data.decode("latin-1", errors="replace")
+    text = text.strip()
+    if len(text) < _SPARSE_TEXT_THRESHOLD:
+        logger.warning("Plain text extraction yielded very little text (%d chars).", len(text))
+    return text
+
+
+def _extract_json(file_data: bytes) -> str:
+    """Parse JSON and re-format with indentation so it reads as structured text."""
+    try:
+        data = json.loads(file_data.decode("utf-8", errors="replace"))
+        text = json.dumps(data, indent=2, ensure_ascii=False)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"JSON parsing failed: {exc}") from exc
+    if len(text) < _SPARSE_TEXT_THRESHOLD:
+        logger.warning("JSON extraction yielded very little text (%d chars).", len(text))
+    return text
+
+
+def _extract_xlsx(file_data: bytes) -> str:
+    """Convert an XLSX workbook to readable text: one row per line, cells separated by ' | '."""
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(
+            io.BytesIO(file_data), read_only=True, data_only=True
+        )
+        parts: list[str] = []
+        for sheet in wb.worksheets:
+            parts.append(f"=== Sheet: {sheet.title} ===")
+            for row in sheet.iter_rows(values_only=True):
+                row_text = " | ".join(str(c) for c in row if c is not None)
+                if row_text.strip():
+                    parts.append(row_text)
+        wb.close()
+        text = "\n".join(parts).strip()
+    except Exception as exc:
+        raise ValueError(f"Excel extraction failed: {exc}") from exc
+
+    if len(text) < _SPARSE_TEXT_THRESHOLD:
+        logger.warning("XLSX extraction yielded very little text (%d chars).", len(text))
+    if not text:
+        raise ValueError("Spreadsheet contains no extractable data.")
+    return text
+
+
+def _extract_csv(file_data: bytes) -> str:
+    """Convert CSV rows to readable text: one row per line, cells separated by ' | '."""
+    try:
+        text_data = file_data.decode("utf-8", errors="replace")
+        reader = csv.reader(io.StringIO(text_data))
+        rows = [
+            " | ".join(cell for cell in row)
+            for row in reader
+            if any(cell.strip() for cell in row)
+        ]
+        text = "\n".join(rows).strip()
+    except Exception as exc:
+        raise ValueError(f"CSV extraction failed: {exc}") from exc
+
+    if len(text) < _SPARSE_TEXT_THRESHOLD:
+        logger.warning("CSV extraction yielded very little text (%d chars).", len(text))
+    if not text:
+        raise ValueError("CSV contains no extractable data.")
+    return text
 
 
 # ── Chunking ───────────────────────────────────────────────────────────────────
@@ -220,10 +362,11 @@ async def _save_chunks_with_embeddings(
     chunks: list[str],
 ) -> None:
     """
-    Embed all chunks in batches and insert them into document_chunks.
+    Embed all chunks in batches and insert them via the ORM.
 
-    Uses raw SQL with ::vector cast because SQLAlchemy has no native understanding
-    of the pgvector `vector` type.
+    Using ORM objects (DocumentChunk) instead of raw SQL avoids the asyncpg
+    named-vs-positional parameter mismatch that caused crashes with sa.text().
+    pgvector handles the list → vector cast automatically via its SQLAlchemy type.
     """
     embedding_provider = get_embedding_provider()
 
@@ -231,26 +374,15 @@ async def _save_chunks_with_embeddings(
         batch = chunks[batch_start : batch_start + _EMBED_BATCH_SIZE]
         vectors = await embedding_provider.embed_texts(batch)
 
-        for offset, (chunk_text, vector) in enumerate(zip(batch, vectors)):
-            chunk_index = batch_start + offset
-            vector_str = "[" + ",".join(str(v) for v in vector) + "]"
-            await db.execute(
-                sa.text(
-                    """
-                    INSERT INTO document_chunks
-                        (document_id, user_id, chunk_text, embedding, chunk_index)
-                    VALUES
-                        (:document_id, :user_id, :chunk_text, :embedding::vector, :chunk_index)
-                    """
-                ),
-                {
-                    "document_id": str(document_id),
-                    "user_id": str(user_id),
-                    "chunk_text": chunk_text,
-                    "embedding": vector_str,
-                    "chunk_index": chunk_index,
-                },
+        for offset, (chunk_text_str, vector) in enumerate(zip(batch, vectors)):
+            chunk = DocumentChunk(
+                document_id=document_id,
+                user_id=user_id,
+                chunk_text=chunk_text_str,
+                embedding=vector,  # plain Python list; pgvector casts to vector(768)
+                chunk_index=batch_start + offset,
             )
+            db.add(chunk)
 
     await db.commit()
 

@@ -5,6 +5,9 @@ Routes:
   GET  /api/documents                — list current user's documents (no file bytes)
   GET  /api/documents/{id}/status    — poll processing status
   DELETE /api/documents/{id}         — delete document + cascade chunks; verifies ownership
+
+Accepted formats: PDF, DOCX, DOC, TXT, MD, JSON, XLSX, XLS, CSV (max 20 MB).
+DOC and XLS are accepted at upload but will fail processing with a conversion message.
 """
 
 from uuid import UUID
@@ -34,8 +37,8 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
 ) -> DocumentUploadResponse:
     """
-    Accept a file upload (PDF, DOCX, TXT, MD; max 20 MB) and schedule background
-    processing (text extraction → chunking → embedding → storage).
+    Accept a file upload (PDF, DOCX, DOC, TXT, MD, JSON, XLSX, XLS, CSV; max 20 MB)
+    and schedule background processing (text extraction → chunking → embedding → storage).
 
     Returns 202 immediately with status='processing'. Poll
     GET /api/documents/{id}/status until status becomes 'ready' or 'failed'.
