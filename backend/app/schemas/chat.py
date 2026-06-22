@@ -40,6 +40,7 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     edited_at: datetime | None
+    sources: str | None = None
 
     model_config = {"from_attributes": True}
 

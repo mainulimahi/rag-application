@@ -4,8 +4,8 @@ Two routers:
 - threads_router: /api/chat-threads  — thread CRUD + message list/create
 - messages_router: /api/chat-messages — edit, regenerate a single message
 
-LLM calls are made inline; every response includes the assistant reply so the
-frontend never needs a separate polling step.
+All LLM calls go through the LangGraph RAG agent (app/agents/), which routes
+each query to document retrieval, web search, both, or plain LLM automatically.
 """
 
 from uuid import UUID
@@ -13,6 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents import run_agent
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
@@ -132,9 +133,9 @@ async def create_thread_message(
     current_user: User = Depends(get_current_user),
 ) -> MessagePairResponse:
     """
-    Append a user message, call the LLM with the full thread history, and
-    store the assistant reply. If this is the first message in the thread the
-    title is auto-generated from the user's message via a short LLM call.
+    Append a user message, run the RAG agent with the full thread history, and
+    store the assistant reply with its sources label. If this is the first message
+    the thread title is auto-generated via a short LLM call.
     Returns both messages and the (possibly updated) thread.
     """
     # Count before insert so we can detect the first message pair.
@@ -144,18 +145,17 @@ async def create_thread_message(
     if user_msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
-    # Build the conversation history for the LLM (includes the just-stored user message).
+    # Build conversation history for the agent (includes the just-stored user message).
     history = await chat_service.list_messages(db, thread_id, current_user.id) or []
     llm_messages: list[LLMMessage] = [
         {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
         for m in history
     ]
 
-    llm = get_llm_provider()
-    assistant_content = await llm.chat(llm_messages)
+    assistant_content, sources = await run_agent(db, current_user.id, llm_messages)
 
     assistant_msg = await chat_service.create_assistant_message(
-        db, thread_id, current_user.id, assistant_content
+        db, thread_id, current_user.id, assistant_content, sources
     )
 
     # Auto-title the thread on the very first exchange.
@@ -164,6 +164,7 @@ async def create_thread_message(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     if msg_count_before == 0 and thread.title == "New Chat":
+        llm = get_llm_provider()
         generated_title = await llm.generate_title(body.content)
         thread = await chat_service.rename_thread(
             db, thread_id, current_user.id, generated_title
@@ -192,9 +193,9 @@ async def update_chat_message(
 ) -> EditMessageResponse:
     """
     Update the content of a user message, delete all subsequent messages in the
-    thread, call the LLM with the updated history, and store a fresh assistant
-    reply. Returns the edited message, the new assistant reply, and the IDs of
-    every message that was deleted so the frontend can sync its state.
+    thread, run the RAG agent with the updated history, and store a fresh
+    assistant reply. Returns the edited message, the new assistant reply, and the
+    IDs of every message that was deleted so the frontend can sync its state.
     """
     original = await chat_service.get_message(db, message_id, current_user.id)
     if original is None:
@@ -220,11 +221,10 @@ async def update_chat_message(
         for m in history
     ]
 
-    llm = get_llm_provider()
-    assistant_content = await llm.chat(llm_messages)
+    assistant_content, sources = await run_agent(db, current_user.id, llm_messages)
 
     assistant_msg = await chat_service.create_assistant_message(
-        db, original.thread_id, current_user.id, assistant_content
+        db, original.thread_id, current_user.id, assistant_content, sources
     )
 
     return EditMessageResponse(
@@ -245,8 +245,8 @@ async def regenerate_message(
     current_user: User = Depends(get_current_user),
 ) -> RegenerateResponse:
     """
-    Re-run the LLM for the history preceding an existing assistant message and
-    replace that message's content in-place (same ID). Returns the updated
+    Re-run the RAG agent for the history preceding an existing assistant message
+    and replace that message's content in-place (same ID). Returns the updated
     assistant message. 404 if not found or not owned; 400 if not an assistant message.
     """
     msg = await chat_service.get_message(db, message_id, current_user.id)
@@ -273,11 +273,10 @@ async def regenerate_message(
         for m in history
     ]
 
-    llm = get_llm_provider()
-    new_content = await llm.chat(llm_messages)
+    new_content, sources = await run_agent(db, current_user.id, llm_messages)
 
     updated_msg = await chat_service.replace_assistant_message(
-        db, message_id, current_user.id, new_content
+        db, message_id, current_user.id, new_content, sources
     )
     if updated_msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")

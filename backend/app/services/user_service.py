@@ -56,6 +56,35 @@ async def update_user_reset_token(
     return user
 
 
+async def update_user_name(
+    db: AsyncSession, user_id: UUID, name: str
+) -> User | None:
+    """Update the display name for the given user. Returns None if the user is not found."""
+    user = await get_user_by_id(db, user_id)
+    if user is None:
+        return None
+    user.name = name
+    user.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def update_user_avatar(
+    db: AsyncSession, user_id: UUID, data: bytes, content_type: str
+) -> User | None:
+    """Store a new profile picture (raw bytes + MIME type). Returns None if user not found."""
+    user = await get_user_by_id(db, user_id)
+    if user is None:
+        return None
+    user.profile_picture_data = data
+    user.profile_picture_content_type = content_type
+    user.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 async def update_user_password(
     db: AsyncSession,
     user: User,

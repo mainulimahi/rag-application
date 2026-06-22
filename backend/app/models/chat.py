@@ -41,3 +41,4 @@ class ChatMessage(Base):
     edited_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    sources: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)

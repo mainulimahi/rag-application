@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { chatApi, authApi } from '@/lib/api/client'
-import type { ChatThread } from '@/lib/types'
+import { chatApi, authApi, usersApi } from '@/lib/api/client'
+import type { ChatThread, User } from '@/lib/types'
 import type { DisplayMessage } from '@/components/chat/ChatMessages'
 import ChatSidebar from '@/components/chat/ChatSidebar'
 import ChatMessages from '@/components/chat/ChatMessages'
@@ -17,12 +17,14 @@ const PENDING_ASSISTANT_ID = '__pending_assistant__'
 export default function ChatPage() {
   const router = useRouter()
 
+  const [user, setUser] = useState<User | null>(null)
   const [threads, setThreads] = useState<ChatThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null)
+  const [chatError, setChatError] = useState<string | null>(null)
 
   const initDone = useRef(false)
 
@@ -36,6 +38,7 @@ export default function ChatPage() {
 
   const selectThread = useCallback(async (threadId: string) => {
     setSelectedThreadId(threadId)
+    setChatError(null)
     setIsLoadingMessages(true)
     try {
       const data = await chatApi.listMessages(threadId)
@@ -55,7 +58,12 @@ export default function ChatPage() {
 
     async function init() {
       try {
-        const existing = await loadThreads()
+        const [currentUser, existing] = await Promise.all([
+          usersApi.me(),
+          loadThreads(),
+        ])
+        setUser(currentUser)
+
         if (existing.length > 0) {
           await selectThread(existing[0].id)
         } else {
@@ -80,8 +88,9 @@ export default function ChatPage() {
       setThreads((prev) => [thread, ...prev])
       setSelectedThreadId(thread.id)
       setMessages([])
+      setChatError(null)
     } catch (err) {
-      console.error('Failed to create thread', err)
+      setChatError(err instanceof Error ? err.message : 'Failed to create chat')
     }
   }
 
@@ -95,7 +104,7 @@ export default function ChatPage() {
       const updated = await chatApi.renameThread(id, title)
       setThreads((prev) => prev.map((t) => (t.id === id ? updated : t)))
     } catch (err) {
-      console.error('Failed to rename thread', err)
+      setChatError(err instanceof Error ? err.message : 'Failed to rename chat')
     }
   }
 
@@ -115,7 +124,7 @@ export default function ChatPage() {
         }
       }
     } catch (err) {
-      console.error('Failed to delete thread', err)
+      setChatError(err instanceof Error ? err.message : 'Failed to delete chat')
     }
   }
 
@@ -123,6 +132,8 @@ export default function ChatPage() {
 
   async function handleSendMessage(content: string) {
     if (!selectedThreadId || isGenerating) return
+
+    setChatError(null)
 
     // Optimistically add the user message and a typing placeholder so the UI
     // doesn't appear frozen while waiting for the LLM (which can take seconds).
@@ -134,6 +145,7 @@ export default function ChatPage() {
       content,
       created_at: new Date().toISOString(),
       edited_at: null,
+      sources: null,
       isPending: true,
     }
     const pendingAssistant: DisplayMessage = {
@@ -144,6 +156,7 @@ export default function ChatPage() {
       content: '',
       created_at: new Date().toISOString(),
       edited_at: null,
+      sources: null,
       isPending: true,
     }
     setMessages((prev) => [...prev, pendingUser, pendingAssistant])
@@ -167,7 +180,7 @@ export default function ChatPage() {
     } catch (err) {
       // Discard placeholders on error so the UI returns to a clean state.
       setMessages((prev) => prev.filter((m) => !m.isPending))
-      console.error('Failed to send message', err)
+      setChatError(err instanceof Error ? err.message : 'Failed to send message')
     } finally {
       setIsGenerating(false)
     }
@@ -175,6 +188,8 @@ export default function ChatPage() {
 
   async function handleEditMessage(messageId: string, content: string) {
     if (isGenerating) return
+
+    setChatError(null)
 
     // Show a typing placeholder for the incoming assistant reply while the API
     // is in flight. The pending user message is not shown here because the
@@ -187,6 +202,7 @@ export default function ChatPage() {
       content: '',
       created_at: new Date().toISOString(),
       edited_at: null,
+      sources: null,
       isPending: true,
     }
     setMessages((prev) => [...prev, pendingAssistant])
@@ -210,7 +226,7 @@ export default function ChatPage() {
       })
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.isPending))
-      console.error('Failed to edit message', err)
+      setChatError(err instanceof Error ? err.message : 'Failed to edit message')
     } finally {
       setIsGenerating(false)
     }
@@ -219,6 +235,7 @@ export default function ChatPage() {
   async function handleRegenerateMessage(messageId: string) {
     if (isGenerating) return
 
+    setChatError(null)
     setRegeneratingId(messageId)
     setIsGenerating(true)
 
@@ -229,7 +246,7 @@ export default function ChatPage() {
         prev.map((m) => (m.id === messageId ? result.assistant_message : m)),
       )
     } catch (err) {
-      console.error('Failed to regenerate message', err)
+      setChatError(err instanceof Error ? err.message : 'Failed to regenerate response')
     } finally {
       setRegeneratingId(null)
       setIsGenerating(false)
@@ -253,6 +270,7 @@ export default function ChatPage() {
       <ChatSidebar
         threads={threads}
         selectedThreadId={selectedThreadId}
+        user={user}
         onSelectThread={handleSelectThread}
         onNewChat={handleNewChat}
         onRenameThread={handleRenameThread}
@@ -266,6 +284,13 @@ export default function ChatPage() {
         ) : (
           <div className="chat-main-header" style={{ color: 'var(--color-text-muted)' }}>
             Loading…
+          </div>
+        )}
+
+        {chatError && (
+          <div className="chat-error-banner" role="alert">
+            {chatError}
+            <button className="chat-error-dismiss" onClick={() => setChatError(null)}>×</button>
           </div>
         )}
 

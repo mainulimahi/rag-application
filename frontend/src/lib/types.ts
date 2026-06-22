@@ -29,6 +29,7 @@ export interface ChatMessage {
   content: string
   created_at: string
   edited_at: string | null
+  sources: 'llm_only' | 'retrieval' | 'web_search' | 'both' | null
 }
 
 export interface MessagePairResponse {

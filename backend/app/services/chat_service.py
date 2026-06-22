@@ -182,11 +182,17 @@ async def count_thread_messages(
 
 
 async def create_assistant_message(
-    db: AsyncSession, thread_id: UUID, user_id: UUID, content: str
+    db: AsyncSession,
+    thread_id: UUID,
+    user_id: UUID,
+    content: str,
+    sources: str | None = None,
 ) -> ChatMessage:
     """
     Append an assistant message to a thread.
 
+    sources indicates which tools the RAG agent used: 'llm_only', 'retrieval',
+    'web_search', or 'both'. Stored for display in the frontend source badge.
     Also bumps thread.updated_at so it stays at the top of the sidebar list.
     """
     message = ChatMessage(
@@ -194,6 +200,7 @@ async def create_assistant_message(
         user_id=user_id,
         role="assistant",
         content=content,
+        sources=sources,
     )
     db.add(message)
     thread = await get_thread(db, thread_id, user_id)
@@ -265,10 +272,14 @@ async def list_messages_before(
 
 
 async def replace_assistant_message(
-    db: AsyncSession, message_id: UUID, user_id: UUID, new_content: str
+    db: AsyncSession,
+    message_id: UUID,
+    user_id: UUID,
+    new_content: str,
+    sources: str | None = None,
 ) -> ChatMessage | None:
     """
-    Replace the content of an existing assistant message in-place.
+    Replace the content (and sources) of an existing assistant message in-place.
 
     Used by the regenerate endpoint — the message keeps its ID so the frontend
     can update its state without re-fetching the whole thread.
@@ -286,6 +297,7 @@ async def replace_assistant_message(
     if message is None:
         return None
     message.content = new_content
+    message.sources = sources
     await db.commit()
     await db.refresh(message)
     return message

@@ -15,7 +15,7 @@ import type {
   User,
 } from '@/lib/types'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 
 function extractErrorMessage(detail: ApiError['detail']): string {
   if (Array.isArray(detail)) {
@@ -51,6 +51,41 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return data as T
+}
+
+export const usersApi = {
+  me: () => apiFetch<User>('/api/users/me'),
+
+  updateName: (name: string) =>
+    apiFetch<User>('/api/users/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+
+  uploadAvatar: async (file: File): Promise<User> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch(`${API_URL}/api/users/me/avatar`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    })
+    const text = await res.text()
+    let data: unknown
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      throw new Error(text || `Upload failed (${res.status})`)
+    }
+    if (!res.ok) {
+      const err = data as ApiError | null
+      const detail = err?.detail
+      throw new Error(
+        detail != null ? extractErrorMessage(detail) : `Upload failed (${res.status})`,
+      )
+    }
+    return data as User
+  },
 }
 
 export const authApi = {

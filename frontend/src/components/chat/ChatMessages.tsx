@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ChatMessage } from '@/lib/types'
 
 // UI-only extension — isPending marks optimistic placeholders that haven't
@@ -103,7 +105,9 @@ export default function ChatMessages({
         >
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
-        <p style={{ fontSize: '0.9375rem' }}>Send a message to start the conversation</p>
+        <p style={{ fontSize: '0.9375rem', color: 'var(--color-text-muted)', marginTop: '0.75rem' }}>
+          Ask anything — your documents and the web are available as context
+        </p>
       </div>
     )
   }
@@ -187,7 +191,38 @@ export default function ChatMessages({
                   </div>
                 ) : (
                   <div className={`chat-bubble${msg.role === 'assistant' ? ' assistant-bubble' : ''}`}>
-                    {msg.content}
+                    {msg.role === 'assistant' ? (
+                      <div className="md-body">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            pre({ children }) {
+                              return <CodeBlock>{children}</CodeBlock>
+                            },
+                            code({ children, className }) {
+                              // Inline code (no language class)
+                              if (!className) {
+                                return <code className="md-inline-code">{children}</code>
+                              }
+                              return <code className={className}>{children}</code>
+                            },
+                          }}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      msg.content
+                    )}
+                  </div>
+                )}
+
+                {/* Source badge — only on real, non-regenerating assistant messages */}
+                {msg.role === 'assistant' && !isRegenerating && msg.sources && msg.sources !== 'llm_only' && (
+                  <div className="source-badge">
+                    {msg.sources === 'retrieval' && '📄 From your documents'}
+                    {msg.sources === 'web_search' && '🌐 Web search'}
+                    {msg.sources === 'both' && '📄🌐 Documents + Web'}
                   </div>
                 )}
 
@@ -245,6 +280,43 @@ export default function ChatMessages({
         )
       })}
       <div ref={bottomRef} />
+    </div>
+  )
+}
+
+// ── Code block with copy button ───────────────────────────────────────────────
+
+function CodeBlock({ children }: { children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false)
+
+  function getTextContent(node: React.ReactNode): string {
+    if (typeof node === 'string') return node
+    if (typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(getTextContent).join('')
+    if (node && typeof node === 'object' && 'props' in (node as object)) {
+      return getTextContent((node as React.ReactElement).props.children)
+    }
+    return ''
+  }
+
+  async function handleCopy() {
+    const text = getTextContent(children)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div className="md-code-block">
+      <button className="md-code-copy" onClick={handleCopy} title="Copy code">
+        {copied ? <CheckIcon /> : <CopyIcon />}
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <pre>{children}</pre>
     </div>
   )
 }

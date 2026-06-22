@@ -2,11 +2,13 @@
 
 import Link from 'next/link'
 import { useRef, useState } from 'react'
-import type { ChatThread } from '@/lib/types'
+import { API_URL } from '@/lib/api/client'
+import type { ChatThread, User } from '@/lib/types'
 
 interface Props {
   threads: ChatThread[]
   selectedThreadId: string | null
+  user: User | null
   onSelectThread: (id: string) => void
   onNewChat: () => void
   onRenameThread: (id: string, title: string) => void
@@ -17,6 +19,7 @@ interface Props {
 export default function ChatSidebar({
   threads,
   selectedThreadId,
+  user,
   onSelectThread,
   onNewChat,
   onRenameThread,
@@ -50,6 +53,19 @@ export default function ChatSidebar({
       onDeleteThread(id)
     }
   }
+
+  const initials = user
+    ? user.name
+        .split(' ')
+        .map((w) => w[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2)
+    : '?'
+
+  const avatarSrc = user?.profile_picture_url
+    ? `${API_URL}${user.profile_picture_url}`
+    : null
 
   return (
     <aside className="chat-sidebar">
@@ -122,9 +138,29 @@ export default function ChatSidebar({
           <FolderIcon />
           Documents
         </Link>
-        <button className="logout-btn" onClick={onLogout}>
-          Sign out
-        </button>
+
+        {/* User row: avatar + name + profile link */}
+        <div className="sidebar-user-row">
+          <Link href="/profile" className="sidebar-user-info" title="Edit profile">
+            <span className="sidebar-avatar">
+              {avatarSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={avatarSrc}
+                  alt=""
+                  className="sidebar-avatar-img"
+                  crossOrigin="use-credentials"
+                />
+              ) : (
+                <span className="sidebar-avatar-initials">{initials}</span>
+              )}
+            </span>
+            <span className="sidebar-user-name">{user?.name ?? '…'}</span>
+          </Link>
+          <button className="logout-btn" onClick={onLogout} title="Sign out">
+            <LogoutIcon />
+          </button>
+        </div>
       </div>
     </aside>
   )
@@ -163,6 +199,16 @@ function TrashIcon() {
       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
       <path d="M10 11v6M14 11v6" />
       <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  )
+}
+
+function LogoutIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <polyline points="16 17 21 12 16 7" />
+      <line x1="21" y1="12" x2="9" y2="12" />
     </svg>
   )
 }
