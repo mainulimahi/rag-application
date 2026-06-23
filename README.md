@@ -1,110 +1,186 @@
 # RAG Application
 
-A general-purpose Retrieval-Augmented Generation (RAG) system. Users upload documents; the system chunks, embeds, and stores them in PostgreSQL (pgvector). Questions are answered by an AI agent that routes dynamically between document retrieval and live web search.
+An AI-powered document Q&A and web search application. Upload PDFs, Word documents, spreadsheets, or plain text files and ask questions in natural language. The system uses a LangGraph agent to dynamically route each query to your uploaded documents, the live web, or both — then synthesises a grounded answer with source attribution.
+
+## Features
+
+- **Multi-format document pipeline** — upload PDF, DOCX, TXT, MD, JSON, XLSX, CSV. Files are chunked, embedded (768-dimensional Gemini vectors), and stored in PostgreSQL with pgvector.
+- **Agentic RAG** — a LangGraph agent classifies each query and routes it to: document retrieval, live web search (Tavily), both sources combined, or plain LLM knowledge. Each response carries a source badge.
+- **Multi-turn chat** — full conversation history, multiple named threads per user, edit-and-regenerate, copy, read-aloud.
+- **User accounts** — signup with email verification, JWT auth (httpOnly cookies, refresh token rotation), profile with avatar, password change, account deletion.
+- **Production Docker setup** — nginx reverse proxy, multi-stage Docker builds, automatic database migrations on startup, health checks on all services.
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Backend | FastAPI + SQLAlchemy (async) + PostgreSQL + pgvector |
-| LLM / Embeddings | Gemini API (`gemini-2.5-flash`, `gemini-embedding-001`) |
-| Agent | LangGraph (retrieval ↔ web search router) |
-| Web search | Tavily API |
-| Frontend | Next.js 14 (App Router, TypeScript strict) |
-| Containers | Docker Compose (Docker Desktop) |
+| Backend | FastAPI (Python 3.12), SQLAlchemy async, Alembic |
+| Database | PostgreSQL 16 + pgvector extension |
+| LLM | Gemini API — `gemini-2.5-flash` (free tier) |
+| Embeddings | Gemini Embedding API — `gemini-embedding-001`, 768 dimensions (free tier) |
+| Agent | LangGraph |
+| Web search | Tavily API (free tier) |
+| Email | Resend API (free tier) |
+| Frontend | Next.js 14, TypeScript strict, App Router |
+| Reverse proxy | nginx:alpine |
+| Containers | Docker Compose |
 
 ## Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — runs all services
-- Python 3.12+ — for local backend development and running migrations
-- Node.js 20+ — for local frontend development
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — runs all services; no local Python or Node.js installation required to run the app
+- Git
 
-## Quick start (Docker Compose)
+For local development outside Docker you also need Python 3.12+ and Node.js 20+.
 
-**1. Configure environment variables:**
+## Quick Start
+
+**1. Clone the repository:**
+
+```bash
+git clone <repo-url>
+cd rag-application
+```
+
+**2. Configure environment variables:**
 
 ```bash
 cp .env.example .env
-# Open .env and fill in all API keys and credentials
 ```
 
-**2. Start all services:**
+Open `.env` and fill in the required API keys (see [Environment Variables](#environment-variables) below).
+
+**3. Start all services:**
 
 ```bash
-docker compose up --build
+docker compose up -d
 ```
 
-| Service | URL |
-|---|---|
-| Backend API | http://localhost:8000 |
-| Frontend | http://localhost:3000 |
-| Postgres | localhost:5432 |
+This builds images, runs database migrations automatically, and starts postgres, backend, frontend, and nginx. First run takes 3–5 minutes while Docker builds the images.
 
-**3. Run database migrations** (once, after postgres is healthy):
+**4. Open the app:**
 
-```bash
-docker compose exec backend alembic upgrade head
+```
+http://localhost
 ```
 
-**4. Verify the API:**
+Create an account and start chatting. With `REQUIRE_EMAIL_VERIFICATION=false` (the default in the provided `.env.example`) you can sign in immediately without clicking a verification link.
+
+**5. Verify everything is healthy:**
 
 ```bash
-curl http://localhost:8000/health
-# → {"status":"ok"}
+docker compose ps
+# All four services should show (healthy)
+
+curl http://localhost/health
+# → {"status":"healthy","database":"connected","version":"1.0.0"}
 ```
 
-## Local backend development (without Docker)
+## Environment Variables
 
-Use this when iterating on backend code against a locally running Postgres.
+All configuration lives in `.env` (gitignored). Copy `.env.example` to get started.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `POSTGRES_USER` | Yes | — | PostgreSQL username |
+| `POSTGRES_PASSWORD` | Yes | — | PostgreSQL password |
+| `POSTGRES_DB` | Yes | — | Database name |
+| `POSTGRES_HOST` | Yes | `postgres` | `postgres` in Docker; `localhost` for local dev |
+| `POSTGRES_PORT` | No | `5432` | PostgreSQL port |
+| `GEMINI_API_KEY` | Yes | — | Google Gemini API key (covers both LLM and embeddings) |
+| `GEMINI_LLM_MODEL` | No | `gemini-2.5-flash` | Gemini model for chat and routing |
+| `GEMINI_EMBEDDING_MODEL` | No | `gemini-embedding-001` | Gemini model for text embeddings |
+| `TAVILY_API_KEY` | Yes | — | Tavily API key for web search |
+| `RESEND_API_KEY` | Yes | — | Resend API key for transactional email |
+| `EMAIL_FROM` | No | `onboarding@resend.dev` | Sender address (must be verified domain in production) |
+| `REQUIRE_EMAIL_VERIFICATION` | No | `true` | `false` skips verification — users log in immediately after signup |
+| `JWT_SECRET_KEY` | Yes | — | 256-bit secret for JWT signing. Generate: `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `30` | Access token lifetime |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | No | `7` | Refresh token lifetime |
+| `ENVIRONMENT` | No | `local` | `local` enables debug links and verbose SQL logging; `production` enables secure cookies |
+| `LOG_LEVEL` | No | `info` | Backend log level (`debug`, `info`, `warning`, `error`) |
+| `NEXT_PUBLIC_API_URL` | No | `` (empty) | Backend URL visible from the browser. Empty = relative URLs through nginx. Set to `http://localhost:8000` for local dev without Docker. |
+
+**Where to get API keys:**
+- Gemini: [Google AI Studio](https://aistudio.google.com/app/apikey) — free tier, no credit card
+- Tavily: [app.tavily.com](https://app.tavily.com) — free tier includes 1000 searches/month
+- Resend: [resend.com](https://resend.com) — free tier includes 3000 emails/month
+
+## API Documentation
+
+FastAPI generates interactive documentation automatically:
+
+- **Swagger UI:** http://localhost:8000/docs
+- **ReDoc:** http://localhost:8000/redoc
+
+The full endpoint list is also documented in [backend/README.md](backend/README.md).
+
+## Architecture Overview
+
+```
+Browser
+  │
+  ▼
+nginx (port 80)
+  ├── /api/*  ──────────────────► FastAPI backend (port 8000, internal)
+  │                                    │
+  │                                    ├── Auth: JWT cookies, bcrypt, Resend email
+  │                                    ├── LangGraph agent
+  │                                    │     ├── router_node  (LLM classifies query)
+  │                                    │     ├── retrieval_node  (pgvector search)
+  │                                    │     ├── websearch_node  (Tavily API)
+  │                                    │     └── synthesis_node  (Gemini LLM)
+  │                                    └── PostgreSQL + pgvector
+  │
+  └── /  ────────────────────────► Next.js frontend (port 3000, internal)
+```
+
+All four services run on an internal Docker network. Only nginx is exposed to the host on port 80. PostgreSQL is also exposed on port 5432 for running Alembic migrations locally during development.
+
+### Data flow for a chat message
+
+1. User sends a message via the frontend.
+2. `POST /api/chat-threads/{id}/messages` triggers `run_agent()`.
+3. `router_node` checks for ready documents and asks Gemini to classify the query.
+4. Based on route, `retrieval_node` searches pgvector and/or `websearch_node` calls Tavily.
+5. `synthesis_node` builds a context block and calls Gemini with the full conversation history.
+6. The assistant message and `sources` label are saved to the database and returned to the frontend.
+
+## Development Guide
+
+### Running the backend locally (without Docker)
+
+Useful when iterating quickly on backend code with a local Postgres instance.
 
 ```bash
-# 1. Create a virtual environment (do this once)
 cd backend
+
+# Create venv (once)
 python -m venv venv
 
-# 2. Activate it
+# Activate
 # Windows
 venv\Scripts\activate
 # macOS / Linux
 source venv/bin/activate
 
-# 3. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# 4. Set POSTGRES_HOST=localhost in .env (instead of "postgres")
+# Set POSTGRES_HOST=localhost in .env
+# Set NEXT_PUBLIC_API_URL=http://localhost:8000 in .env
 
-# 5. Start the dev server
-uvicorn app.main:app --reload
-```
-
-> Always activate the venv before running any Python commands in the backend directory.
-
-## Running migrations
-
-All schema changes go through Alembic. Never call `Base.metadata.create_all()` directly.
-
-```bash
-# Run from backend/ with venv activated (or via docker compose exec backend)
-
-# Apply all pending migrations
+# Run migrations
 alembic upgrade head
 
-# Roll back one step
-alembic downgrade -1
-
-# Check current state
-alembic current
-
-# Show migration history
-alembic history
-
-# Generate a new migration after changing SQLAlchemy models
-alembic revision --autogenerate -m "describe the change"
+# Start the dev server (with hot reload)
+uvicorn app.main:app --reload
+# → http://localhost:8000
 ```
 
-> **After pulling changes:** always run `alembic upgrade head` if new migration files are present.
+Always activate the venv before running any Python commands in `backend/`.
 
-## Local frontend development (without Docker)
+### Running the frontend locally (without Docker)
 
 ```bash
 cd frontend
@@ -113,44 +189,112 @@ npm run dev
 # → http://localhost:3000
 ```
 
-## Project structure
+Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `.env` so the browser can reach the backend directly.
 
-```
-rag-application/
-├── backend/
-│   ├── app/
-│   │   ├── api/          # FastAPI route definitions (versioned: /api/v1/)
-│   │   ├── agents/       # LangGraph graph + nodes
-│   │   ├── core/         # config.py (settings), security helpers
-│   │   ├── db/           # SQLAlchemy engine, session factory, declarative base
-│   │   ├── models/       # ORM models (user, chat_thread, chat_message, document, document_chunk)
-│   │   ├── schemas/      # Pydantic request/response schemas
-│   │   ├── services/     # Business logic (auth, chat, document, embedding, llm, retrieval, websearch)
-│   │   └── main.py       # FastAPI entrypoint
-│   ├── alembic/          # Migration environment + version files
-│   ├── tests/
-│   ├── alembic.ini
-│   └── requirements.txt
-├── frontend/
-│   ├── src/
-│   │   ├── app/          # Next.js App Router pages and layouts
-│   │   ├── components/   # Shared UI components
-│   │   └── lib/          # API client, shared TypeScript types
-│   ├── package.json
-│   └── tsconfig.json     # strict: true
-├── docker-compose.yml
-├── .env.example
-└── CLAUDE.md
+### Viewing logs
+
+```bash
+# All services
+docker compose logs -f
+
+# Individual service
+docker compose logs -f backend
+docker compose logs -f frontend
+docker compose logs -f nginx
+docker compose logs -f postgres
 ```
 
-## Architecture notes
+### Rebuilding after code changes
 
-- **Data isolation:** every user-owned table (`documents`, `document_chunks`, `chat_threads`, `chat_messages`) has a `user_id` NOT NULL FK. All queries filter by `user_id` at the service layer — cross-user data access is impossible by design.
-- **Document storage:** uploaded files are stored as `bytea` in Postgres — no local filesystem or S3 dependency.
-- **Provider abstraction:** LLM and embedding calls go through service interfaces so Gemini can be swapped for another provider without touching calling code.
-- **Migrations:** Alembic is the sole mechanism for schema changes. No auto-migration on startup.
-- **Agentic routing:** the LangGraph agent in `agents/` decides per-query whether to use the vector retrieval tool, the Tavily web search tool, or both, then synthesizes the final answer.
+```bash
+docker compose build backend    # rebuild backend image only
+docker compose build frontend   # rebuild frontend image only
+docker compose up -d            # recreate changed containers
+```
 
-## Environment variables
+## Database Migrations
 
-All configuration lives in the root `.env` file (gitignored). See `.env.example` for the full list with descriptions. Never commit real API keys.
+All schema changes go through Alembic. The backend `entrypoint.sh` runs `alembic upgrade head` automatically on every container start, so migrations are never missed.
+
+```bash
+# Apply all pending migrations (also runs automatically on startup)
+docker exec rag-application-backend-1 alembic upgrade head
+
+# Or locally with venv activated
+cd backend && alembic upgrade head
+
+# Roll back one step
+alembic downgrade -1
+
+# Check current revision
+alembic current
+
+# Show full history
+alembic history
+
+# Generate a new migration after changing SQLAlchemy models
+alembic revision --autogenerate -m "describe the change"
+```
+
+**Never** call `Base.metadata.create_all()` or modify the schema manually — Alembic is the only mechanism.
+
+Current migration chain:
+1. `0001_initial_schema` — pgvector extension, users, chat_threads, chat_messages, documents, document_chunks
+2. `717d7488b704` — document processing status and error fields
+3. `c7a8f9b0e1d2` — source badge field on chat messages
+4. `d8e9f0a1b2c3` — profile picture storage (binary + content type) on users
+5. `e1f2a3b4c5d6` — refresh_tokens table with SHA-256 token hashes
+6. `f2a3b4c5d6e7` — email verification fields on users; soft-delete (`deleted_at`) on chat_threads and documents
+
+## Deployment Guide
+
+The application is container-ready and can be deployed to any Linux server with Docker.
+
+### Production `.env` changes
+
+```bash
+POSTGRES_HOST=postgres            # keep as-is (Docker service name)
+ENVIRONMENT=production            # enables secure cookies, disables debug links
+REQUIRE_EMAIL_VERIFICATION=true   # enforce email verification
+EMAIL_FROM=noreply@yourdomain.com # must be a Resend-verified domain
+LOG_LEVEL=warning                 # reduce log volume
+```
+
+### Resend domain verification
+
+In production, `EMAIL_FROM` must use a domain you own and have verified in the Resend dashboard. Resend's `onboarding@resend.dev` sender only works in test mode to a single recipient.
+
+### SSL with Certbot (optional)
+
+To add HTTPS, place Certbot-issued certificates on the host and update `nginx/nginx.conf` to listen on port 443. The nginx config is mounted as a volume and can be updated without rebuilding the image.
+
+## Troubleshooting
+
+**Port 80 already in use:**
+```bash
+docker compose ps           # check what's using port 80
+# or on Linux: sudo lsof -i :80
+```
+Stop the conflicting service and re-run `docker compose up -d`.
+
+**"unhealthy" container on startup:**
+```bash
+docker compose logs backend   # check for startup errors (migrations, config)
+docker compose logs frontend
+```
+The most common cause is a missing or incorrect environment variable. Verify `.env` has all required keys.
+
+**Database connection errors:**
+`POSTGRES_HOST` must be `postgres` when running inside Docker Compose. If running the backend locally outside Docker, set it to `localhost`.
+
+**Email not sending:**
+1. Verify `RESEND_API_KEY` is correct in `.env`.
+2. Check the backend logs for Resend error messages.
+3. Set `REQUIRE_EMAIL_VERIFICATION=false` to bypass email verification during local development.
+4. In production, ensure `EMAIL_FROM` uses a Resend-verified domain.
+
+**Document processing stuck in "processing" status:**
+Processing runs as a FastAPI `BackgroundTask`. If the backend restarts mid-processing, the document remains stuck. Delete the document via the UI and re-upload to trigger reprocessing.
+
+**Rebuilding clears the database:**
+The `docker compose down -v` flag removes volumes including the Postgres data volume. Use `docker compose down` (without `-v`) to stop services while preserving data.
