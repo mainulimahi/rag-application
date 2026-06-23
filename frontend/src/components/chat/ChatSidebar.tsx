@@ -9,10 +9,13 @@ interface Props {
   threads: ChatThread[]
   selectedThreadId: string | null
   user: User | null
+  threadsHasMore: boolean
+  isLoadingMoreThreads: boolean
   onSelectThread: (id: string) => void
   onNewChat: () => void
   onRenameThread: (id: string, title: string) => void
   onDeleteThread: (id: string) => void
+  onLoadMoreThreads: () => void
   onLogout: () => void
 }
 
@@ -20,10 +23,13 @@ export default function ChatSidebar({
   threads,
   selectedThreadId,
   user,
+  threadsHasMore,
+  isLoadingMoreThreads,
   onSelectThread,
   onNewChat,
   onRenameThread,
   onDeleteThread,
+  onLoadMoreThreads,
   onLogout,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -130,6 +136,16 @@ export default function ChatSidebar({
           >
             No conversations yet
           </p>
+        )}
+
+        {threadsHasMore && (
+          <button
+            className="load-more-btn"
+            onClick={onLoadMoreThreads}
+            disabled={isLoadingMoreThreads}
+          >
+            {isLoadingMoreThreads ? 'Loading…' : 'Load more'}
+          </button>
         )}
       </div>
 

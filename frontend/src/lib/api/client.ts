@@ -11,6 +11,7 @@ import type {
   DocumentUploadResponse,
   EditMessageResponse,
   MessagePairResponse,
+  PaginatedResponse,
   RegenerateResponse,
   User,
 } from '@/lib/types'
@@ -62,6 +63,31 @@ export const usersApi = {
       body: JSON.stringify({ name }),
     }),
 
+  changePassword: (current_password: string, new_password: string, confirm_new_password: string) =>
+    apiFetch<{ message: string }>('/api/users/me/password', {
+      method: 'PATCH',
+      body: JSON.stringify({ current_password, new_password, confirm_new_password }),
+    }),
+
+  deleteAccount: async (password: string): Promise<void> => {
+    const res = await fetch(`${API_URL}/api/users/me`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) {
+      const data = (await res.json()) as ApiError
+      throw new Error(
+        data?.detail != null
+          ? typeof data.detail === 'string'
+            ? data.detail
+            : data.detail.map((e) => e.msg).join(', ')
+          : `Request failed (${res.status})`,
+      )
+    }
+  },
+
   uploadAvatar: async (file: File): Promise<User> => {
     const formData = new FormData()
     formData.append('file', file)
@@ -90,9 +116,20 @@ export const usersApi = {
 
 export const authApi = {
   signup: (name: string, email: string, password: string, confirm_password: string) =>
-    apiFetch<User>('/api/auth/signup', {
+    apiFetch<{ message: string; debug_verification_link?: string }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify({ name, email, password, confirm_password }),
+    }),
+
+  verifyEmail: (token: string) =>
+    apiFetch<User>(`/api/auth/verify-email?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+    }),
+
+  resendVerification: (email: string) =>
+    apiFetch<{ message: string }>('/api/auth/resend-verification', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
     }),
 
   login: (email: string, password: string) =>
@@ -120,7 +157,8 @@ export const authApi = {
 }
 
 export const chatApi = {
-  listThreads: () => apiFetch<ChatThread[]>('/api/chat-threads'),
+  listThreads: (page = 1, limit = 20) =>
+    apiFetch<PaginatedResponse<ChatThread>>(`/api/chat-threads?page=${page}&limit=${limit}`),
 
   createThread: (title?: string) =>
     apiFetch<ChatThread>('/api/chat-threads', {
@@ -145,8 +183,10 @@ export const chatApi = {
     }
   },
 
-  listMessages: (threadId: string) =>
-    apiFetch<ChatMessage[]>(`/api/chat-threads/${threadId}/messages`),
+  listMessages: (threadId: string, page = 1, limit = 50) =>
+    apiFetch<PaginatedResponse<ChatMessage>>(
+      `/api/chat-threads/${threadId}/messages?page=${page}&limit=${limit}`
+    ),
 
   createMessage: (threadId: string, content: string) =>
     apiFetch<MessagePairResponse>(`/api/chat-threads/${threadId}/messages`, {
@@ -197,7 +237,8 @@ export const documentApi = {
     return data as DocumentUploadResponse
   },
 
-  list: () => apiFetch<DocumentListItem[]>('/api/documents'),
+  list: (page = 1, limit = 20) =>
+    apiFetch<PaginatedResponse<DocumentListItem>>(`/api/documents?page=${page}&limit=${limit}`),
 
   getStatus: (documentId: string) =>
     apiFetch<DocumentStatusResponse>(`/api/documents/${documentId}/status`),

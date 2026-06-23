@@ -16,10 +16,10 @@ from app.models.chat import ChatMessage, ChatThread
 
 
 async def list_threads(db: AsyncSession, user_id: UUID) -> list[ChatThread]:
-    """Return all threads owned by user_id, ordered by most recently updated first."""
+    """Return all non-deleted threads owned by user_id, ordered by most recently updated first."""
     result = await db.execute(
         sa.select(ChatThread)
-        .where(ChatThread.user_id == user_id)
+        .where(ChatThread.user_id == user_id, ChatThread.deleted_at.is_(None))
         .order_by(ChatThread.updated_at.desc())
     )
     return list(result.scalars().all())
@@ -39,11 +39,12 @@ async def create_thread(
 async def get_thread(
     db: AsyncSession, thread_id: UUID, user_id: UUID
 ) -> ChatThread | None:
-    """Return a thread only if it exists and belongs to user_id."""
+    """Return a thread only if it exists, belongs to user_id, and is not soft-deleted."""
     result = await db.execute(
         sa.select(ChatThread).where(
             ChatThread.id == thread_id,
             ChatThread.user_id == user_id,
+            ChatThread.deleted_at.is_(None),
         )
     )
     return result.scalar_one_or_none()
@@ -71,15 +72,15 @@ async def delete_thread(
     db: AsyncSession, thread_id: UUID, user_id: UUID
 ) -> bool:
     """
-    Delete a thread and cascade-delete its messages.
+    Soft-delete a thread by setting deleted_at to the current time.
 
-    Returns False if the thread doesn't exist or isn't owned by user_id.
-    The DB cascade (ON DELETE CASCADE) handles message cleanup.
+    The thread and its messages remain in the DB but are hidden from all list
+    and get queries. Returns False if the thread doesn't exist or isn't owned by user_id.
     """
     thread = await get_thread(db, thread_id, user_id)
     if thread is None:
         return False
-    await db.delete(thread)
+    thread.deleted_at = datetime.now(timezone.utc)
     await db.commit()
     return True
 
@@ -248,6 +249,75 @@ async def delete_messages_after(
         await db.commit()
 
     return deleted_ids
+
+
+async def list_threads_paginated(
+    db: AsyncSession, user_id: UUID, page: int = 1, limit: int = 20
+) -> tuple[list[ChatThread], int]:
+    """
+    Return a page of threads for user_id, ordered by most recently updated first.
+
+    Returns (threads, total_count). Used by the paginated GET /api/chat-threads endpoint.
+    Internal callers that need all threads should continue to use list_threads().
+    """
+    skip = (page - 1) * limit
+
+    count_result = await db.execute(
+        sa.select(sa.func.count()).select_from(ChatThread).where(
+            ChatThread.user_id == user_id, ChatThread.deleted_at.is_(None)
+        )
+    )
+    total: int = count_result.scalar_one()
+
+    result = await db.execute(
+        sa.select(ChatThread)
+        .where(ChatThread.user_id == user_id, ChatThread.deleted_at.is_(None))
+        .order_by(ChatThread.updated_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    return list(result.scalars().all()), total
+
+
+async def list_messages_paginated(
+    db: AsyncSession, thread_id: UUID, user_id: UUID, page: int = 1, limit: int = 50
+) -> tuple[list[ChatMessage] | None, int]:
+    """
+    Return a page of messages from a thread in chronological order.
+
+    Messages are fetched newest-first (DESC) then reversed so the page is
+    chronological — this means page 1 contains the most recent messages, which
+    is what the frontend needs when first entering a thread.
+
+    Returns (None, 0) if the thread doesn't exist or isn't owned by user_id.
+    """
+    thread = await get_thread(db, thread_id, user_id)
+    if thread is None:
+        return None, 0
+
+    skip = (page - 1) * limit
+
+    count_result = await db.execute(
+        sa.select(sa.func.count()).select_from(ChatMessage).where(
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.user_id == user_id,
+        )
+    )
+    total: int = count_result.scalar_one()
+
+    result = await db.execute(
+        sa.select(ChatMessage)
+        .where(
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.user_id == user_id,
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    messages = list(result.scalars().all())
+    messages.reverse()  # return in chronological order within the page
+    return messages, total
 
 
 async def list_messages_before(

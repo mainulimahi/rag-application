@@ -1,8 +1,9 @@
 """User service — database operations for user accounts."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,12 @@ async def get_user_by_id(db: AsyncSession, user_id: UUID) -> User | None:
 async def get_user_by_reset_token(db: AsyncSession, token: str) -> User | None:
     """Return the user with the given reset token, or None if not found."""
     result = await db.execute(select(User).where(User.reset_token == token))
+    return result.scalar_one_or_none()
+
+
+async def get_user_by_verification_token(db: AsyncSession, token: str) -> User | None:
+    """Return the user with the given email verification token, or None if not found."""
+    result = await db.execute(select(User).where(User.email_verification_token == token))
     return result.scalar_one_or_none()
 
 
@@ -98,3 +105,47 @@ async def update_user_password(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def set_verification_token(
+    db: AsyncSession, user: User, token: str
+) -> User:
+    """Store a fresh email verification token (expires in 24 hours)."""
+    user.email_verification_token = token
+    user.email_verification_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    user.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def mark_user_verified(db: AsyncSession, user: User) -> User:
+    """Mark the user's email as verified and clear the verification token."""
+    user.is_verified = True
+    user.email_verification_token = None
+    user.email_verification_expires_at = None
+    user.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def delete_user(db: AsyncSession, user_id: UUID) -> None:
+    """
+    Hard-delete a user and all their data in FK-safe order.
+
+    Explicit order: refresh_tokens → document_chunks → documents →
+    chat_messages → chat_threads → user.
+    This avoids relying on DB-level cascades (which may not be set on all tables).
+    """
+    from app.models.refresh_token import RefreshToken
+    from app.models.document import Document, DocumentChunk
+    from app.models.chat import ChatMessage, ChatThread
+
+    await db.execute(sa.delete(RefreshToken).where(RefreshToken.user_id == user_id))
+    await db.execute(sa.delete(DocumentChunk).where(DocumentChunk.user_id == user_id))
+    await db.execute(sa.delete(Document).where(Document.user_id == user_id))
+    await db.execute(sa.delete(ChatMessage).where(ChatMessage.user_id == user_id))
+    await db.execute(sa.delete(ChatThread).where(ChatThread.user_id == user_id))
+    await db.execute(sa.delete(User).where(User.id == user_id))
+    await db.commit()

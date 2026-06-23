@@ -13,16 +13,22 @@ interface Props {
   messages: DisplayMessage[]
   isGenerating: boolean
   regeneratingId: string | null
+  messagesHasOlder: boolean
+  isLoadingOlder: boolean
   onEditMessage: (id: string, content: string) => void
   onRegenerateMessage: (id: string) => void
+  onLoadOlderMessages: () => void
 }
 
 export default function ChatMessages({
   messages,
   isGenerating,
   regeneratingId,
+  messagesHasOlder,
+  isLoadingOlder,
   onEditMessage,
   onRegenerateMessage,
+  onLoadOlderMessages,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -114,6 +120,17 @@ export default function ChatMessages({
 
   return (
     <div className="chat-messages">
+      {messagesHasOlder && (
+        <div style={{ textAlign: 'center', padding: '0.5rem 0' }}>
+          <button
+            className="load-more-btn"
+            onClick={onLoadOlderMessages}
+            disabled={isLoadingOlder}
+          >
+            {isLoadingOlder ? 'Loading…' : 'Load older messages'}
+          </button>
+        </div>
+      )}
       {messages.map((msg) => {
         const isPending = !!msg.isPending
         const isRegenerating = msg.id === regeneratingId

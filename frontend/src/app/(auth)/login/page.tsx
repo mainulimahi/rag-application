@@ -12,18 +12,43 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [unverified, setUnverified] = useState(false)
+  const [resendLoading, setResendLoading] = useState(false)
+  const [resendSuccess, setResendSuccess] = useState('')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
+    setUnverified(false)
+    setResendSuccess('')
     setLoading(true)
     try {
       await authApi.login(email, password)
       router.push('/chat')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      const msg = err instanceof Error ? err.message : 'Login failed'
+      if (msg.toLowerCase().includes('verify')) {
+        setUnverified(true)
+        setError(msg)
+      } else {
+        setError(msg)
+      }
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleResendVerification() {
+    if (!email) return
+    setResendLoading(true)
+    setResendSuccess('')
+    try {
+      await authApi.resendVerification(email)
+      setResendSuccess('Verification email sent — check your inbox.')
+    } catch {
+      setResendSuccess('Failed to resend. Please try again.')
+    } finally {
+      setResendLoading(false)
     }
   }
 
@@ -31,6 +56,27 @@ export default function LoginPage() {
     <AuthCard title="Welcome back" subtitle="Sign in to your account">
       <form onSubmit={handleSubmit}>
         {error && <Alert type="error" message={error} />}
+        {resendSuccess && <Alert type="success" message={resendSuccess} />}
+        {unverified && !resendSuccess && (
+          <div style={{ marginBottom: '1rem', fontSize: '0.875rem', textAlign: 'center' }}>
+            <button
+              type="button"
+              onClick={handleResendVerification}
+              disabled={resendLoading || !email}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-primary)',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                fontSize: 'inherit',
+                padding: 0,
+              }}
+            >
+              {resendLoading ? 'Sending…' : 'Resend verification email'}
+            </button>
+          </div>
+        )}
         <Field
           label="Email"
           id="email"

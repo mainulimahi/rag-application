@@ -36,3 +36,8 @@ openpyxl>=3.1.0
 
 # Utilities
 email-validator>=2.1.0
+filetype>=1.2.0
+resend>=2.0.0
+
+# Security
+slowapi>=0.1.9

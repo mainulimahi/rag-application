@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # Tavily
     TAVILY_API_KEY: str
 
+    # Email (Resend)
+    RESEND_API_KEY: str
+    EMAIL_FROM: str = "onboarding@resend.dev"
+    REQUIRE_EMAIL_VERIFICATION: bool = True
+
     # JWT
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"

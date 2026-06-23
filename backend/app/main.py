@@ -2,23 +2,40 @@
 
 import logging
 
+import sqlalchemy as sa
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from app.api.auth import router as auth_router
 from app.api.chat import messages_router as chat_messages_router
 from app.api.chat import threads_router as chat_threads_router
 from app.api.documents import router as documents_router
 from app.api.users import router as users_router
+from app.core.config import settings
+from app.core.limiter import limiter
+from app.db.session import AsyncSessionLocal
 
+# ── Structured logging ────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
+
+# ── App setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="RAG Application",
     description="Retrieval-Augmented Generation API",
-    version="0.1.0",
+    version="1.0.0",
 )
+
+# Rate limiter — state.limiter must be set before any request is processed.
+app.state.limiter = limiter
 
 # Browser → backend direct calls with credentials: 'include'.
 # allow_credentials=True is required for cookies (httpOnly auth cookies) to be sent and received.
@@ -36,6 +53,43 @@ app.include_router(users_router)
 app.include_router(chat_threads_router)
 app.include_router(chat_messages_router)
 app.include_router(documents_router)
+
+
+# ── Middleware ────────────────────────────────────────────────────────────────
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):  # type: ignore[type-arg]
+    """Attach security headers to every response."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):  # type: ignore[type-arg]
+    """Log every request at INFO level with the final status code."""
+    response = await call_next(request)
+    logger.info("%s %s → %d", request.method, request.url.path, response.status_code)
+    return response
+
+
+# ── Exception handlers ────────────────────────────────────────────────────────
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return a structured 429 response instead of slowapi's plain-text default."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Too many requests. Please slow down and try again shortly.",
+            "type": "rate_limit_exceeded",
+        },
+    )
 
 
 @app.exception_handler(Exception)
@@ -56,11 +110,33 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
     return JSONResponse(
         status_code=500,
-        content={"detail": "An unexpected server error occurred"},
+        content={
+            "detail": "An unexpected error occurred",
+            "type": "internal_error",
+        },
     )
 
 
+# ── Health check ──────────────────────────────────────────────────────────────
+
+
 @app.get("/health", tags=["system"])
-async def health_check() -> dict[str, str]:
-    """Liveness probe — returns 200 if the service is running."""
-    return {"status": "ok"}
+async def health_check() -> JSONResponse:
+    """
+    Liveness + readiness probe.
+
+    Returns 200 with database=connected when healthy, 503 when the DB is unreachable.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(sa.text("SELECT 1"))
+        db_status = "connected"
+    except Exception:
+        logger.exception("Health check: database unreachable")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "database": "unreachable", "version": "1.0.0"},
+        )
+    return JSONResponse(
+        content={"status": "healthy", "database": db_status, "version": "1.0.0"}
+    )

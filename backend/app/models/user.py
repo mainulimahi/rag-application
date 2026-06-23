@@ -25,6 +25,13 @@ class User(Base):
     reset_token_expires_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    is_verified: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=False, server_default=sa.text("false")
+    )
+    email_verification_token: Mapped[str | None] = mapped_column(sa.String(255), nullable=True)
+    email_verification_expires_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False
     )

@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, EmailStr, field_validator, model_validator
 
+from app.core.validators import validate_password_strength
 from app.schemas.user import UserResponse
 
 
@@ -21,10 +22,9 @@ class SignupRequest(BaseModel):
 
     @field_validator("password")
     @classmethod
-    def password_min_length(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
+    def password_strength(cls, v: str) -> str:
+        """Enforce uppercase, lowercase, digit, and 8-char minimum."""
+        return validate_password_strength(v)
 
     @model_validator(mode="after")
     def passwords_match(self) -> "SignupRequest":
@@ -59,11 +59,14 @@ class ResetPasswordRequest(BaseModel):
 
     @field_validator("new_password")
     @classmethod
-    def password_min_length(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
+    def password_strength(cls, v: str) -> str:
+        """Enforce same strength rules as signup."""
+        return validate_password_strength(v)
 
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr

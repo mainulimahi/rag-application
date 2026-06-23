@@ -27,8 +27,10 @@ import csv
 import io
 import json
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
+import filetype
 import sqlalchemy as sa
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,12 +86,28 @@ _SPARSE_TEXT_THRESHOLD = 100
 # ── Validation ─────────────────────────────────────────────────────────────────
 
 
-def validate_file(filename: str, content_type: str, file_size: int) -> None:
+# Magic-byte MIME types accepted for each binary extension.
+# DOCX/XLSX are ZIP-based; filetype may return either the generic or specific MIME.
+_BINARY_MAGIC: dict[str, set[str]] = {
+    ".pdf": {"application/pdf"},
+    ".docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+    },
+    ".xlsx": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/zip",
+    },
+}
+
+
+def validate_file(filename: str, content_type: str, file_size: int, file_data: bytes | None = None) -> None:
     """
     Raise ValueError with a user-facing message if the file is invalid.
 
-    Checks extension, MIME type, and file size — in that order so the most
-    specific error is returned first.
+    Checks extension, MIME type, file size, and (for binary formats) magic bytes.
+    Magic-bytes check is skipped for text-based formats (TXT, MD, JSON, CSV) because
+    those don't have detectable magic byte signatures.
     """
     ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -110,6 +128,16 @@ def validate_file(filename: str, content_type: str, file_size: int) -> None:
     if file_size > MAX_FILE_SIZE_BYTES:
         mb = file_size / (1024 * 1024)
         raise ValueError(f"File too large ({mb:.1f} MB). Maximum allowed size is 20 MB.")
+
+    # Magic bytes validation for binary formats only.
+    if file_data is not None and ext in _BINARY_MAGIC:
+        kind = filetype.guess(file_data)
+        if kind is None or kind.mime not in _BINARY_MAGIC[ext]:
+            detected = kind.mime if kind else "unknown"
+            raise ValueError(
+                f"File content does not match the '{ext}' format (detected: {detected}). "
+                "Ensure you are uploading the correct file type."
+            )
 
 
 # ── Text extraction ────────────────────────────────────────────────────────────
@@ -410,7 +438,7 @@ async def _mark_failed(db: AsyncSession, document_id: UUID, error: str) -> None:
 
 async def list_documents(db: AsyncSession, user_id: UUID) -> list[dict]:
     """
-    Return all documents for a user with their chunk counts, newest first.
+    Return all non-deleted documents for a user with their chunk counts, newest first.
 
     Returns dicts with: id, filename, content_type, status, processing_error,
     chunk_count, uploaded_at — never includes file_data (raw bytes).
@@ -429,7 +457,7 @@ async def list_documents(db: AsyncSession, user_id: UUID) -> list[dict]:
             FROM documents d
             LEFT JOIN document_chunks c
                 ON c.document_id = d.id AND c.user_id = d.user_id
-            WHERE d.user_id = :user_id
+            WHERE d.user_id = :user_id AND d.deleted_at IS NULL
             GROUP BY d.id
             ORDER BY d.uploaded_at DESC
             """
@@ -439,14 +467,56 @@ async def list_documents(db: AsyncSession, user_id: UUID) -> list[dict]:
     return [dict(row._mapping) for row in result.all()]
 
 
+async def list_documents_paginated(
+    db: AsyncSession, user_id: UUID, page: int = 1, limit: int = 20
+) -> tuple[list[dict], int]:
+    """
+    Return a page of documents for user_id with their chunk counts, newest first.
+
+    Returns (documents, total_count). Used by the paginated GET /api/documents endpoint.
+    """
+    skip = (page - 1) * limit
+
+    count_result = await db.execute(
+        sa.text("SELECT COUNT(*) FROM documents WHERE user_id = :user_id AND deleted_at IS NULL"),
+        {"user_id": str(user_id)},
+    )
+    total: int = count_result.scalar_one()
+
+    result = await db.execute(
+        sa.text(
+            """
+            SELECT
+                d.id,
+                d.filename,
+                d.content_type,
+                d.status,
+                d.processing_error,
+                d.uploaded_at,
+                COUNT(c.id)::int AS chunk_count
+            FROM documents d
+            LEFT JOIN document_chunks c
+                ON c.document_id = d.id AND c.user_id = d.user_id
+            WHERE d.user_id = :user_id AND d.deleted_at IS NULL
+            GROUP BY d.id
+            ORDER BY d.uploaded_at DESC
+            LIMIT :limit OFFSET :skip
+            """
+        ),
+        {"user_id": str(user_id), "limit": limit, "skip": skip},
+    )
+    return [dict(row._mapping) for row in result.all()], total
+
+
 async def get_document(
     db: AsyncSession, document_id: UUID, user_id: UUID
 ) -> Document | None:
-    """Return a document only if it exists and belongs to user_id."""
+    """Return a document only if it exists, belongs to user_id, and is not soft-deleted."""
     result = await db.execute(
         sa.select(Document).where(
             Document.id == document_id,
             Document.user_id == user_id,
+            Document.deleted_at.is_(None),
         )
     )
     return result.scalar_one_or_none()
@@ -471,7 +541,7 @@ async def get_document_status(
             FROM documents d
             LEFT JOIN document_chunks c
                 ON c.document_id = d.id AND c.user_id = d.user_id
-            WHERE d.id = :document_id AND d.user_id = :user_id
+            WHERE d.id = :document_id AND d.user_id = :user_id AND d.deleted_at IS NULL
             GROUP BY d.id
             """
         ),
@@ -485,13 +555,20 @@ async def delete_document(
     db: AsyncSession, document_id: UUID, user_id: UUID
 ) -> bool:
     """
-    Delete a document and cascade-delete its chunks (via DB ON DELETE CASCADE).
+    Soft-delete a document and immediately hard-delete its chunks.
 
+    The document row is marked with deleted_at so it disappears from list views and
+    status polls. Chunks are hard-deleted right away so they don't consume vector storage
+    or appear in RAG similarity searches.
     Returns False if the document doesn't exist or isn't owned by user_id.
     """
     doc = await get_document(db, document_id, user_id)
     if doc is None:
         return False
-    await db.delete(doc)
+    doc.deleted_at = datetime.now(timezone.utc)
+    # Hard-delete chunks immediately — they must not appear in RAG searches.
+    await db.execute(
+        sa.delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+    )
     await db.commit()
     return True

@@ -1,19 +1,19 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { Alert, AuthCard, Field, SubmitButton } from '@/components/auth/AuthCard'
 import { authApi } from '@/lib/api/client'
 
 export default function SignupPage() {
-  const router = useRouter()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [successMessage, setSuccessMessage] = useState('')
+  const [debugLink, setDebugLink] = useState('')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -26,13 +26,40 @@ export default function SignupPage() {
 
     setLoading(true)
     try {
-      await authApi.signup(name, email, password, confirmPassword)
-      router.push('/chat')
+      const result = await authApi.signup(name, email, password, confirmPassword)
+      setSuccessMessage(result.message)
+      if (result.debug_verification_link) {
+        setDebugLink(result.debug_verification_link)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign up failed')
     } finally {
       setLoading(false)
     }
+  }
+
+  if (successMessage) {
+    return (
+      <AuthCard title="Check your email" subtitle="One more step to get started">
+        <Alert type="success" message={successMessage} />
+        {debugLink && (
+          <p style={{ marginTop: '1rem', fontSize: '0.8125rem', color: 'var(--color-text-muted)', wordBreak: 'break-all' }}>
+            <strong>Dev link:</strong>{' '}
+            <a href={debugLink} style={{ color: 'var(--color-primary)' }}>
+              {debugLink}
+            </a>
+          </p>
+        )}
+        <p style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '0.875rem', color: 'var(--color-text-muted)' }}>
+          Didn&apos;t receive it?{' '}
+          <Link href="/signup" onClick={() => { setSuccessMessage(''); setDebugLink('') }} style={{ fontWeight: 500 }}>
+            Try again
+          </Link>
+          {' or '}
+          <Link href="/login" style={{ fontWeight: 500 }}>sign in</Link>
+        </p>
+      </AuthCard>
+    )
   }
 
   return (

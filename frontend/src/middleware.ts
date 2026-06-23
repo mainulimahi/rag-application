@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 // Routes accessible without authentication
-const PUBLIC_PATHS = ['/login', '/signup', '/forgot-password', '/reset-password']
+const PUBLIC_PATHS = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email']
 
 export function middleware(request: NextRequest) {
   const token = request.cookies.get('access_token')?.value

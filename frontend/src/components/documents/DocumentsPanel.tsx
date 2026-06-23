@@ -7,8 +7,13 @@ import type { DocumentListItem } from '@/lib/types'
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.txt', '.md']
 const MAX_SIZE_MB = 20
 
+const DOCS_LIMIT = 20
+
 export default function DocumentsPanel() {
   const [documents, setDocuments] = useState<DocumentListItem[]>([])
+  const [docsPage, setDocsPage] = useState(1)
+  const [docsHasMore, setDocsHasMore] = useState(false)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -19,10 +24,12 @@ export default function DocumentsPanel() {
 
   const loadDocuments = useCallback(async () => {
     try {
-      const docs = await documentApi.list()
-      setDocuments(docs)
+      const data = await documentApi.list(1, DOCS_LIMIT)
+      setDocuments(data.items)
+      setDocsPage(1)
+      setDocsHasMore(data.pages > 1)
       // Resume polling for any documents still in 'processing' state
-      for (const doc of docs) {
+      for (const doc of data.items) {
         if (doc.status === 'processing') {
           startPolling(doc.id)
         }
@@ -124,6 +131,25 @@ export default function DocumentsPanel() {
     if (file) handleUpload(file)
   }
 
+  async function handleLoadMore() {
+    if (isLoadingMore) return
+    setIsLoadingMore(true)
+    try {
+      const nextPage = docsPage + 1
+      const data = await documentApi.list(nextPage, DOCS_LIMIT)
+      setDocuments((prev) => [...prev, ...data.items])
+      setDocsPage(nextPage)
+      setDocsHasMore(nextPage < data.pages)
+      for (const doc of data.items) {
+        if (doc.status === 'processing') startPolling(doc.id)
+      }
+    } catch (err) {
+      console.error('Failed to load more documents', err)
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
+
   async function handleDelete(documentId: string, filename: string) {
     if (!window.confirm(`Delete "${filename}"? This cannot be undone.`)) return
     try {
@@ -215,6 +241,18 @@ export default function DocumentsPanel() {
               </button>
             </div>
           ))
+        )}
+
+        {docsHasMore && (
+          <div style={{ textAlign: 'center', padding: '0.75rem 0' }}>
+            <button
+              className="load-more-btn"
+              onClick={handleLoadMore}
+              disabled={isLoadingMore}
+            >
+              {isLoadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          </div>
         )}
       </div>
     </div>

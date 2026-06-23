@@ -1,11 +1,13 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { API_URL, usersApi } from '@/lib/api/client'
 import type { User } from '@/lib/types'
 
 export default function ProfilePage() {
+  const router = useRouter()
   const [user, setUser] = useState<User | null>(null)
   const [loadError, setLoadError] = useState('')
 
@@ -20,6 +22,21 @@ export default function ProfilePage() {
   const [avatarUploading, setAvatarUploading] = useState(false)
   const [avatarError, setAvatarError] = useState('')
   const avatarInputRef = useRef<HTMLInputElement>(null)
+
+  // Delete account state
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const [deleteLoading, setDeleteLoading] = useState(false)
+
+  // Password change state
+  const [showPasswordForm, setShowPasswordForm] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordSuccess, setPasswordSuccess] = useState('')
 
   useEffect(() => {
     usersApi.me()
@@ -84,6 +101,59 @@ export default function ProfilePage() {
     } finally {
       setAvatarUploading(false)
       if (avatarInputRef.current) avatarInputRef.current.value = ''
+    }
+  }
+
+  async function handleDeleteAccount(e: React.FormEvent) {
+    e.preventDefault()
+    setDeleteError('')
+    if (!deletePassword) {
+      setDeleteError('Password is required')
+      return
+    }
+    setDeleteLoading(true)
+    try {
+      await usersApi.deleteAccount(deletePassword)
+      router.push('/login')
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete account')
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
+
+  function cancelPasswordForm() {
+    setShowPasswordForm(false)
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmNewPassword('')
+    setPasswordError('')
+    setPasswordSuccess('')
+  }
+
+  async function savePassword(e: React.FormEvent) {
+    e.preventDefault()
+    setPasswordError('')
+    setPasswordSuccess('')
+    if (!currentPassword || !newPassword || !confirmNewPassword) {
+      setPasswordError('All fields are required')
+      return
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError('New passwords do not match')
+      return
+    }
+    setPasswordSaving(true)
+    try {
+      const result = await usersApi.changePassword(currentPassword, newPassword, confirmNewPassword)
+      setPasswordSuccess(result.message)
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmNewPassword('')
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : 'Failed to change password')
+    } finally {
+      setPasswordSaving(false)
     }
   }
 
@@ -202,6 +272,127 @@ export default function ProfilePage() {
             <span className="profile-field-readonly-note">Cannot be changed</span>
           </div>
         </div>
+
+        {/* Password section */}
+        <div className="profile-field">
+          <label className="profile-field-label">Password</label>
+          {!showPasswordForm ? (
+            <div className="profile-field-row">
+              <span className="profile-field-value" style={{ color: 'var(--color-text-muted)' }}>
+                ••••••••
+              </span>
+              <button className="profile-edit-btn" onClick={() => setShowPasswordForm(true)}>
+                Change
+              </button>
+            </div>
+          ) : (
+            <form className="profile-password-form" onSubmit={savePassword}>
+              <input
+                className="profile-field-input"
+                type="password"
+                placeholder="Current password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                disabled={passwordSaving}
+                autoComplete="current-password"
+              />
+              <input
+                className="profile-field-input"
+                type="password"
+                placeholder="New password (8+ chars, upper, lower, digit)"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                disabled={passwordSaving}
+                autoComplete="new-password"
+              />
+              <input
+                className="profile-field-input"
+                type="password"
+                placeholder="Confirm new password"
+                value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)}
+                disabled={passwordSaving}
+                autoComplete="new-password"
+              />
+              {passwordError && <p className="profile-field-error">{passwordError}</p>}
+              {passwordSuccess && (
+                <p className="profile-field-success">{passwordSuccess}</p>
+              )}
+              <div className="profile-field-actions">
+                <button
+                  type="button"
+                  className="msg-action-btn"
+                  onClick={cancelPasswordForm}
+                  disabled={passwordSaving}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="msg-action-btn primary" disabled={passwordSaving}>
+                  {passwordSaving ? 'Saving…' : 'Update password'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+
+      {/* Danger zone */}
+      <div className="profile-card" style={{ borderColor: 'var(--color-error)', marginTop: '1.5rem' }}>
+        <h2 style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--color-error)', marginBottom: '0.75rem' }}>
+          Danger zone
+        </h2>
+        {!showDeleteDialog ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
+            <div>
+              <p style={{ fontSize: '0.875rem', fontWeight: 500, margin: 0 }}>Delete account</p>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', margin: '0.25rem 0 0' }}>
+                Permanently remove your account and all data. This cannot be undone.
+              </p>
+            </div>
+            <button
+              className="msg-action-btn"
+              style={{ color: 'var(--color-error)', borderColor: 'var(--color-error)', whiteSpace: 'nowrap' }}
+              onClick={() => { setShowDeleteDialog(true); setDeleteError('') }}
+            >
+              Delete account
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleDeleteAccount}>
+            <p style={{ fontSize: '0.875rem', marginBottom: '0.75rem', color: 'var(--color-text-muted)' }}>
+              Enter your password to confirm. <strong style={{ color: 'inherit' }}>This will permanently delete all your data.</strong>
+            </p>
+            <input
+              className="profile-field-input"
+              type="password"
+              placeholder="Your current password"
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+              disabled={deleteLoading}
+              autoComplete="current-password"
+              autoFocus
+            />
+            {deleteError && <p className="profile-field-error" style={{ marginTop: '0.5rem' }}>{deleteError}</p>}
+            <div className="profile-field-actions" style={{ marginTop: '0.75rem' }}>
+              <button
+                type="button"
+                className="msg-action-btn"
+                onClick={() => { setShowDeleteDialog(false); setDeletePassword(''); setDeleteError('') }}
+                disabled={deleteLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="msg-action-btn"
+                style={{ color: '#fff', background: 'var(--color-error)', borderColor: 'var(--color-error)' }}
+                disabled={deleteLoading}
+              >
+                {deleteLoading ? 'Deleting…' : 'Yes, delete my account'}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   )

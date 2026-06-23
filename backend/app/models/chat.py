@@ -23,6 +23,9 @@ class ChatThread(Base):
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
 
 
 class ChatMessage(Base):

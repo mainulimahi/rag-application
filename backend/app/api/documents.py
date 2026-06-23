@@ -12,13 +12,14 @@ DOC and XLS are accepted at upload but will fail processing with a conversion me
 
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.document import DocumentListItem, DocumentStatusResponse, DocumentUploadResponse
+from app.schemas.pagination import PaginatedResponse
 from app.services import document_service
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -50,6 +51,7 @@ async def upload_document(
             filename=file.filename or "",
             content_type=file.content_type or "",
             file_size=len(file_data),
+            file_data=file_data,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
@@ -76,16 +78,25 @@ async def upload_document(
 
 @router.get(
     "",
-    response_model=list[DocumentListItem],
+    response_model=PaginatedResponse[DocumentListItem],
     summary="List uploaded documents",
 )
 async def list_documents(
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(20, ge=1, le=100, description="Documents per page"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[DocumentListItem]:
-    """Return all documents uploaded by the authenticated user, newest first."""
-    rows = await document_service.list_documents(db, current_user.id)
-    return [DocumentListItem(**row) for row in rows]
+) -> PaginatedResponse[DocumentListItem]:
+    """Return a page of documents uploaded by the authenticated user, newest first."""
+    rows, total = await document_service.list_documents_paginated(db, current_user.id, page, limit)
+    pages = max(1, (total + limit - 1) // limit)
+    return PaginatedResponse(
+        items=[DocumentListItem(**row) for row in rows],
+        total=total,
+        page=page,
+        limit=limit,
+        pages=pages,
+    )
 
 
 @router.get(

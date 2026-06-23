@@ -10,7 +10,7 @@ each query to document retrieval, web search, both, or plain LLM automatically.
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import run_agent
@@ -28,6 +28,7 @@ from app.schemas.chat import (
     ThreadResponse,
     ThreadUpdate,
 )
+from app.schemas.pagination import PaginatedResponse
 from app.services import chat_service
 from app.services.llm_service import LLMMessage, get_llm_provider
 
@@ -40,15 +41,25 @@ messages_router = APIRouter(prefix="/api/chat-messages", tags=["chat-messages"])
 
 @threads_router.get(
     "",
-    response_model=list[ThreadResponse],
+    response_model=PaginatedResponse[ThreadResponse],
     summary="List chat threads",
 )
 async def list_chat_threads(
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(20, ge=1, le=100, description="Threads per page"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[ThreadResponse]:
-    """Return all chat threads for the authenticated user, most recently updated first."""
-    return await chat_service.list_threads(db, current_user.id)
+) -> PaginatedResponse[ThreadResponse]:
+    """Return a page of chat threads for the authenticated user, most recently updated first."""
+    threads, total = await chat_service.list_threads_paginated(db, current_user.id, page, limit)
+    pages = max(1, (total + limit - 1) // limit)
+    return PaginatedResponse(
+        items=[ThreadResponse.model_validate(t) for t in threads],
+        total=total,
+        page=page,
+        limit=limit,
+        pages=pages,
+    )
 
 
 @threads_router.post(
@@ -105,19 +116,36 @@ async def delete_chat_thread(
 
 @threads_router.get(
     "/{thread_id}/messages",
-    response_model=list[MessageResponse],
+    response_model=PaginatedResponse[MessageResponse],
     summary="List messages in a thread",
 )
 async def list_thread_messages(
     thread_id: UUID,
+    page: int = Query(1, ge=1, description="Page number — page 1 contains the most recent messages"),
+    limit: int = Query(50, ge=1, le=200, description="Messages per page"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[MessageResponse]:
-    """Return all messages in a thread in chronological order. 404 if not found or not owned."""
-    messages = await chat_service.list_messages(db, thread_id, current_user.id)
+) -> PaginatedResponse[MessageResponse]:
+    """
+    Return a page of messages in a thread in chronological order.
+
+    Page 1 contains the most recent messages (newest-first fetch, then reversed for display).
+    To load older messages, increment the page number.
+    404 if the thread doesn't exist or isn't owned by the user.
+    """
+    messages, total = await chat_service.list_messages_paginated(
+        db, thread_id, current_user.id, page, limit
+    )
     if messages is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
-    return messages
+    pages = max(1, (total + limit - 1) // limit)
+    return PaginatedResponse(
+        items=[MessageResponse.model_validate(m) for m in messages],
+        total=total,
+        page=page,
+        limit=limit,
+        pages=pages,
+    )
 
 
 @threads_router.post(

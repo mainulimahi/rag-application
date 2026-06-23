@@ -9,18 +9,24 @@ import ChatSidebar from '@/components/chat/ChatSidebar'
 import ChatMessages from '@/components/chat/ChatMessages'
 import ChatInput from '@/components/chat/ChatInput'
 
-// Stable IDs for the two optimistic placeholder messages shown while the LLM
-// is running. Using constants avoids a dependency on crypto.randomUUID().
 const PENDING_USER_ID = '__pending_user__'
 const PENDING_ASSISTANT_ID = '__pending_assistant__'
+const THREADS_LIMIT = 20
+const MESSAGES_LIMIT = 50
 
 export default function ChatPage() {
   const router = useRouter()
 
   const [user, setUser] = useState<User | null>(null)
   const [threads, setThreads] = useState<ChatThread[]>([])
+  const [threadsPage, setThreadsPage] = useState(1)
+  const [threadsHasMore, setThreadsHasMore] = useState(false)
+  const [isLoadingMoreThreads, setIsLoadingMoreThreads] = useState(false)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [messages, setMessages] = useState<DisplayMessage[]>([])
+  const [messagesPage, setMessagesPage] = useState(1)
+  const [messagesHasOlder, setMessagesHasOlder] = useState(false)
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null)
@@ -31,18 +37,23 @@ export default function ChatPage() {
   // ── Thread helpers ──────────────────────────────────────────────────────────
 
   const loadThreads = useCallback(async (): Promise<ChatThread[]> => {
-    const data = await chatApi.listThreads()
-    setThreads(data)
-    return data
+    const data = await chatApi.listThreads(1, THREADS_LIMIT)
+    setThreads(data.items)
+    setThreadsPage(1)
+    setThreadsHasMore(data.pages > 1)
+    return data.items
   }, [])
 
   const selectThread = useCallback(async (threadId: string) => {
     setSelectedThreadId(threadId)
     setChatError(null)
     setIsLoadingMessages(true)
+    setMessagesPage(1)
+    setMessagesHasOlder(false)
     try {
-      const data = await chatApi.listMessages(threadId)
-      setMessages(data)
+      const data = await chatApi.listMessages(threadId, 1, MESSAGES_LIMIT)
+      setMessages(data.items)
+      setMessagesHasOlder(data.pages > 1)
     } catch {
       setMessages([])
     } finally {
@@ -88,6 +99,7 @@ export default function ChatPage() {
       setThreads((prev) => [thread, ...prev])
       setSelectedThreadId(thread.id)
       setMessages([])
+      setMessagesHasOlder(false)
       setChatError(null)
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Failed to create chat')
@@ -121,10 +133,44 @@ export default function ChatPage() {
           setThreads([thread])
           setSelectedThreadId(thread.id)
           setMessages([])
+          setMessagesHasOlder(false)
         }
       }
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Failed to delete chat')
+    }
+  }
+
+  async function handleLoadMoreThreads() {
+    if (isLoadingMoreThreads) return
+    setIsLoadingMoreThreads(true)
+    try {
+      const nextPage = threadsPage + 1
+      const data = await chatApi.listThreads(nextPage, THREADS_LIMIT)
+      setThreads((prev) => [...prev, ...data.items])
+      setThreadsPage(nextPage)
+      setThreadsHasMore(nextPage < data.pages)
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Failed to load more chats')
+    } finally {
+      setIsLoadingMoreThreads(false)
+    }
+  }
+
+  async function handleLoadOlderMessages() {
+    if (!selectedThreadId || isLoadingOlder) return
+    setIsLoadingOlder(true)
+    try {
+      const nextPage = messagesPage + 1
+      const data = await chatApi.listMessages(selectedThreadId, nextPage, MESSAGES_LIMIT)
+      // Prepend older messages (they are already in chronological order within the page)
+      setMessages((prev) => [...data.items, ...prev])
+      setMessagesPage(nextPage)
+      setMessagesHasOlder(nextPage < data.pages)
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Failed to load older messages')
+    } finally {
+      setIsLoadingOlder(false)
     }
   }
 
@@ -135,8 +181,6 @@ export default function ChatPage() {
 
     setChatError(null)
 
-    // Optimistically add the user message and a typing placeholder so the UI
-    // doesn't appear frozen while waiting for the LLM (which can take seconds).
     const pendingUser: DisplayMessage = {
       id: PENDING_USER_ID,
       thread_id: selectedThreadId,
@@ -165,20 +209,16 @@ export default function ChatPage() {
     try {
       const result = await chatApi.createMessage(selectedThreadId, content)
 
-      // Replace both pending placeholders with the real server messages.
       setMessages((prev) => [
         ...prev.filter((m) => !m.isPending),
         result.user_message,
         result.assistant_message,
       ])
 
-      // Update the thread in the sidebar (title may have been auto-generated,
-      // and updated_at has changed so ordering is correct).
       setThreads((prev) =>
         prev.map((t) => (t.id === selectedThreadId ? result.thread : t)),
       )
     } catch (err) {
-      // Discard placeholders on error so the UI returns to a clean state.
       setMessages((prev) => prev.filter((m) => !m.isPending))
       setChatError(err instanceof Error ? err.message : 'Failed to send message')
     } finally {
@@ -191,9 +231,6 @@ export default function ChatPage() {
 
     setChatError(null)
 
-    // Show a typing placeholder for the incoming assistant reply while the API
-    // is in flight. The pending user message is not shown here because the
-    // existing message stays in the list (it's just about to be updated).
     const pendingAssistant: DisplayMessage = {
       id: PENDING_ASSISTANT_ID,
       thread_id: selectedThreadId ?? '',
@@ -212,10 +249,6 @@ export default function ChatPage() {
       const result = await chatApi.updateMessage(messageId, content)
 
       setMessages((prev) => {
-        // 1. Remove the pending placeholder.
-        // 2. Remove all messages that the server deleted (subsequent messages).
-        // 3. Update the edited user message.
-        // 4. Append the new assistant reply.
         const deletedSet = new Set(result.deleted_message_ids)
         return [
           ...prev
@@ -241,7 +274,6 @@ export default function ChatPage() {
 
     try {
       const result = await chatApi.regenerateMessage(messageId)
-      // The message ID stays the same — just swap the content.
       setMessages((prev) =>
         prev.map((m) => (m.id === messageId ? result.assistant_message : m)),
       )
@@ -271,10 +303,13 @@ export default function ChatPage() {
         threads={threads}
         selectedThreadId={selectedThreadId}
         user={user}
+        threadsHasMore={threadsHasMore}
+        isLoadingMoreThreads={isLoadingMoreThreads}
         onSelectThread={handleSelectThread}
         onNewChat={handleNewChat}
         onRenameThread={handleRenameThread}
         onDeleteThread={handleDeleteThread}
+        onLoadMoreThreads={handleLoadMoreThreads}
         onLogout={handleLogout}
       />
 
@@ -305,8 +340,11 @@ export default function ChatPage() {
             messages={messages}
             isGenerating={isGenerating}
             regeneratingId={regeneratingId}
+            messagesHasOlder={messagesHasOlder}
+            isLoadingOlder={isLoadingOlder}
             onEditMessage={handleEditMessage}
             onRegenerateMessage={handleRegenerateMessage}
+            onLoadOlderMessages={handleLoadOlderMessages}
           />
         )}
 

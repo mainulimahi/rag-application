@@ -1168,3 +1168,37 @@ a:hover {
   font-size: 0.8125rem;
   color: var(--color-error);
 }
+
+.profile-field-success {
+  font-size: 0.8125rem;
+  color: var(--color-success);
+}
+
+.profile-password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Shared "load more" button used in sidebar and docs panel */
+.load-more-btn {
+  width: 100%;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -1,6 +1,14 @@
 // Shared TypeScript types — all API response and request shapes are defined here.
 // Components must import types from this file; no inline API-response types in components.
 
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  page: number
+  limit: number
+  pages: number
+}
+
 export interface User {
   id: string
   name: string

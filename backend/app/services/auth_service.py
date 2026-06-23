@@ -1,12 +1,18 @@
-"""Authentication service — password hashing, JWT creation/validation, reset token generation."""
+"""Authentication service — password hashing, JWT creation/validation, reset token generation,
+and refresh token DB storage/revocation."""
 
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
+import sqlalchemy as sa
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.refresh_token import RefreshToken
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -72,3 +78,59 @@ def generate_reset_token() -> str:
 def reset_token_expiry() -> datetime:
     """Return a timestamp 1 hour from now (UTC) for use as a reset token expiry."""
     return datetime.now(timezone.utc) + timedelta(hours=1)
+
+
+# ── Refresh token DB operations ───────────────────────────────────────────────
+
+
+def _hash_token(token: str) -> str:
+    """Return the SHA-256 hex digest of a token string. Tokens are never stored in plain text."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def store_refresh_token(db: AsyncSession, user_id: UUID, token: str) -> None:
+    """
+    Persist a new refresh token (hashed) with its expiry.
+
+    Called on login, signup, and token rotation so every active session
+    is tracked in the DB and can be individually revoked.
+    """
+    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    rt = RefreshToken(
+        user_id=user_id,
+        token_hash=_hash_token(token),
+        expires_at=expires_at,
+    )
+    db.add(rt)
+    await db.commit()
+
+
+async def get_valid_refresh_token(db: AsyncSession, token: str) -> RefreshToken | None:
+    """
+    Return the DB record for a refresh token if it exists, is not revoked, and is not expired.
+
+    Returns None if any condition fails — caller should treat this as an invalid token.
+    """
+    result = await db.execute(
+        sa.select(RefreshToken).where(
+            RefreshToken.token_hash == _hash_token(token),
+            RefreshToken.revoked == sa.false(),
+            RefreshToken.expires_at > datetime.now(timezone.utc),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def revoke_refresh_token(db: AsyncSession, token: str) -> None:
+    """
+    Mark a refresh token as revoked in the DB.
+
+    Called on logout and on token rotation (after issuing a replacement token).
+    Silently does nothing if the token doesn't exist — safe to call unconditionally.
+    """
+    await db.execute(
+        sa.update(RefreshToken)
+        .where(RefreshToken.token_hash == _hash_token(token))
+        .values(revoked=True)
+    )
+    await db.commit()
