@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
+      # Exposed to host for local Alembic runs outside Docker (e.g. alembic upgrade head locally)
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -19,31 +20,50 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # No host port — all traffic enters through nginx on port 80
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file: .env
     environment:
-      # Override for Docker networking: Next.js server calls the backend container by service name
-      - BACKEND_URL=http://backend:8000
-    ports:
-      - "3000:3000"
+      # Empty string makes API calls relative so nginx proxies them correctly.
+      # NEXT_PUBLIC_* vars are inlined at build time; this documents the intent.
+      - NEXT_PUBLIC_API_URL=
     depends_on:
       - backend
+    healthcheck:
+      # Use node (always available) — wget resolves localhost to ::1 on Alpine but
+      # Next.js standalone listens on IPv4 only, causing false "Connection refused".
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # No host port — all traffic enters through nginx on port 80
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
