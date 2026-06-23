@@ -25,6 +25,7 @@ export interface ChatThread {
   id: string
   user_id: string
   title: string
+  pinned: boolean
   created_at: string
   updated_at: string
 }
@@ -80,3 +81,24 @@ export interface DocumentStatusResponse {
   processing_error: string | null
   chunk_count: number
 }
+
+export interface UserStats {
+  documents_count: number
+  total_chunks: number
+  responses_generated: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_tokens: number
+}
+
+export interface DeleteAllChatsResponse {
+  deleted_count: number
+}
+
+// ── SSE streaming events ──────────────────────────────────────────────────────
+
+export type StreamEvent =
+  | { type: 'status'; content: string }
+  | { type: 'token'; content: string }
+  | { type: 'done'; user_message: ChatMessage; assistant_message: ChatMessage; thread: ChatThread | null }
+  | { type: 'error'; content: string }

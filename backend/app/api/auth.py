@@ -107,20 +107,19 @@ async def signup(
 
     response: dict = {"message": "Please check your email to verify your account"}
     if settings.ENVIRONMENT == "local":
-        response["debug_verification_link"] = f"http://localhost:3000/verify-email?token={token}"
+        response["debug_verification_link"] = f"{settings.FRONTEND_URL}/verify-email?token={token}"
     return response
 
 
 @router.post(
     "/verify-email",
-    response_model=UserResponse,
+    response_model=MessageResponse,
     summary="Verify email address using the token from the verification email",
 )
 async def verify_email(
     token: str,
-    response: Response,
     db: AsyncSession = Depends(get_db),
-) -> UserResponse:
+) -> MessageResponse:
     """
     Validate the email verification token, mark the account as verified,
     and set auth cookies so the user is logged in immediately.
@@ -140,14 +139,8 @@ async def verify_email(
         )
 
     await user_service.mark_user_verified(db, user)
-
-    access_token = auth_service.create_access_token(str(user.id))
-    refresh_token = auth_service.create_refresh_token(str(user.id))
-    await auth_service.store_refresh_token(db, user.id, refresh_token)
-    _set_auth_cookies(response, access_token, refresh_token)
-
     logger.info("Email verified for user: %s", user.email)
-    return UserResponse.model_validate(user)
+    return MessageResponse(message="Email verified successfully. You can now sign in.")
 
 
 @router.post(
@@ -340,7 +333,7 @@ async def forgot_password(
     expires_at = auth_service.reset_token_expiry()
     await user_service.update_user_reset_token(db, user, token=token, expires_at=expires_at)
 
-    reset_link = f"http://localhost:3000/reset-password?token={token}"
+    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
 
     try:
         await email_service.send_password_reset_email(str(body.email), user.name, token)

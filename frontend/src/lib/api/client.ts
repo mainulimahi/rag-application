@@ -1,11 +1,11 @@
 // Centralized API client — all calls go directly to the FastAPI backend.
-// NEXT_PUBLIC_API_URL is the backend base URL visible from the browser.
 // credentials: 'include' is required so the browser sends httpOnly auth cookies.
 
 import type {
   ApiError,
   ChatMessage,
   ChatThread,
+  DeleteAllChatsResponse,
   DocumentListItem,
   DocumentStatusResponse,
   DocumentUploadResponse,
@@ -13,10 +13,12 @@ import type {
   MessagePairResponse,
   PaginatedResponse,
   RegenerateResponse,
+  StreamEvent,
   User,
+  UserStats,
 } from '@/lib/types'
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 
 function extractErrorMessage(detail: ApiError['detail']): string {
   if (Array.isArray(detail)) {
@@ -88,6 +90,8 @@ export const usersApi = {
     }
   },
 
+  stats: () => apiFetch<UserStats>('/api/users/me/stats'),
+
   uploadAvatar: async (file: File): Promise<User> => {
     const formData = new FormData()
     formData.append('file', file)
@@ -122,7 +126,7 @@ export const authApi = {
     }),
 
   verifyEmail: (token: string) =>
-    apiFetch<User>(`/api/auth/verify-email?token=${encodeURIComponent(token)}`, {
+    apiFetch<{ message: string }>(`/api/auth/verify-email?token=${encodeURIComponent(token)}`, {
       method: 'POST',
     }),
 
@@ -172,6 +176,9 @@ export const chatApi = {
       body: JSON.stringify({ title }),
     }),
 
+  pinThread: (threadId: string) =>
+    apiFetch<ChatThread>(`/api/chat-threads/${threadId}/pin`, { method: 'PATCH' }),
+
   deleteThread: async (threadId: string): Promise<void> => {
     const res = await fetch(`${API_URL}/api/chat-threads/${threadId}`, {
       method: 'DELETE',
@@ -181,6 +188,22 @@ export const chatApi = {
       const data = (await res.json()) as ApiError
       throw new Error(extractErrorMessage(data.detail) ?? `Request failed (${res.status})`)
     }
+  },
+
+  deleteAllChats: async (password: string): Promise<DeleteAllChatsResponse> => {
+    const res = await fetch(`${API_URL}/api/chat-threads`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) {
+      const data = (await res.json()) as ApiError
+      throw new Error(
+        data?.detail != null ? extractErrorMessage(data.detail) : `Request failed (${res.status})`
+      )
+    }
+    return res.json() as Promise<DeleteAllChatsResponse>
   },
 
   listMessages: (threadId: string, page = 1, limit = 50) =>
@@ -193,6 +216,42 @@ export const chatApi = {
       method: 'POST',
       body: JSON.stringify({ content }),
     }),
+
+  /** Consume the SSE stream. Yields parsed StreamEvent objects. */
+  async *streamMessage(threadId: string, content: string): AsyncGenerator<StreamEvent> {
+    const res = await fetch(`${API_URL}/api/chat-threads/${threadId}/messages/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+
+    if (!res.ok || !res.body) {
+      throw new Error(`Stream request failed (${res.status})`)
+    }
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const json = line.slice(6).trim()
+          if (json) {
+            yield JSON.parse(json) as StreamEvent
+          }
+        }
+      }
+    }
+  },
 
   updateMessage: (messageId: string, content: string) =>
     apiFetch<EditMessageResponse>(`/api/chat-messages/${messageId}`, {
@@ -210,7 +269,6 @@ export const documentApi = {
   upload: async (file: File): Promise<DocumentUploadResponse> => {
     const formData = new FormData()
     formData.append('file', file)
-    // No Content-Type header — browser sets multipart/form-data with boundary automatically.
     const res = await fetch(`${API_URL}/api/documents/upload`, {
       method: 'POST',
       credentials: 'include',

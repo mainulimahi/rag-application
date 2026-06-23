@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 resend.api_key = settings.RESEND_API_KEY
 
 _APP_NAME = "RAG Application"
-_BASE_URL = "http://localhost:3000"
+_BASE_URL = settings.FRONTEND_URL
 
 _BUTTON_STYLE = (
     "display:inline-block;padding:12px 24px;background:#2563eb;color:#ffffff;"
@@ -70,7 +70,7 @@ async def send_verification_email(to_email: str, name: str, token: str) -> None:
   and activate your account.
 </p>
 <p style="margin:0 0 24px">
-  <a href="{verify_url}" style="{_BUTTON_STYLE}">Verify email address</a>
+  <a href="{verify_url}" target="_blank" style="{_BUTTON_STYLE}">Verify email address</a>
 </p>
 <p style="margin:0;font-size:13px;color:#6b7280">
   This link expires in 24 hours. If the button doesn't work, copy this URL:<br/>

@@ -8,16 +8,22 @@ All LLM calls go through the LangGraph RAG agent (app/agents/), which routes
 each query to document retrieval, web search, both, or plain LLM automatically.
 """
 
+import json
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import run_agent
+from app.agents.graph import stream_agent_events
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.chat import (
+    DeleteAllChatsRequest,
+    DeleteAllChatsResponse,
     EditMessageResponse,
     MessageCreate,
     MessagePairResponse,
@@ -30,10 +36,14 @@ from app.schemas.chat import (
 )
 from app.schemas.pagination import PaginatedResponse
 from app.services import chat_service
+from app.services.auth_service import verify_password
 from app.services.llm_service import LLMMessage, get_llm_provider
+from app.services.user_service import get_user_by_id
 
 threads_router = APIRouter(prefix="/api/chat-threads", tags=["chat-threads"])
 messages_router = APIRouter(prefix="/api/chat-messages", tags=["chat-messages"])
+
+logger = logging.getLogger(__name__)
 
 
 # ── Thread CRUD ───────────────────────────────────────────────────────────────
@@ -95,6 +105,27 @@ async def rename_chat_thread(
     return thread
 
 
+@threads_router.patch(
+    "/{thread_id}/pin",
+    response_model=ThreadResponse,
+    summary="Toggle the pinned state of a chat thread",
+)
+async def pin_chat_thread(
+    thread_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ThreadResponse:
+    """
+    Toggle pinned on a thread. Pinned threads appear at the top of the sidebar
+    and cannot be deleted until unpinned.
+    Returns 404 if not found or not owned by the user.
+    """
+    thread = await chat_service.toggle_pin_thread(db, thread_id, current_user.id)
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    return ThreadResponse.model_validate(thread)
+
+
 @threads_router.delete(
     "/{thread_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -105,10 +136,41 @@ async def delete_chat_thread(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    """Delete a thread and all its messages (cascade). Returns 404 if not found or not owned."""
-    deleted = await chat_service.delete_thread(db, thread_id, current_user.id)
-    if not deleted:
+    """
+    Delete a thread and all its messages (cascade). Returns 404 if not found or not owned.
+    Returns 400 if the thread is pinned — unpin it first.
+    """
+    result = await chat_service.delete_thread(db, thread_id, current_user.id)
+    if result is False:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    if result == "pinned":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unpin this thread before deleting",
+        )
+
+
+@threads_router.delete(
+    "",
+    response_model=DeleteAllChatsResponse,
+    summary="Delete all non-pinned chat threads",
+)
+async def delete_all_chat_threads(
+    body: DeleteAllChatsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DeleteAllChatsResponse:
+    """
+    Soft-delete all non-pinned threads for the authenticated user (hard-deletes their messages).
+    Requires password confirmation to prevent accidental data loss.
+    Returns 401 if the password is incorrect.
+    """
+    user = await get_user_by_id(db, current_user.id)
+    if user is None or not verify_password(body.password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
+
+    deleted_count = await chat_service.delete_all_non_pinned_threads(db, current_user.id)
+    return DeleteAllChatsResponse(deleted_count=deleted_count)
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -166,27 +228,26 @@ async def create_thread_message(
     the thread title is auto-generated via a short LLM call.
     Returns both messages and the (possibly updated) thread.
     """
-    # Count before insert so we can detect the first message pair.
     msg_count_before = await chat_service.count_thread_messages(db, thread_id, current_user.id)
 
     user_msg = await chat_service.create_message(db, thread_id, current_user.id, body.content)
     if user_msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
-    # Build conversation history for the agent (includes the just-stored user message).
     history = await chat_service.list_messages(db, thread_id, current_user.id) or []
     llm_messages: list[LLMMessage] = [
         {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
         for m in history
     ]
 
-    assistant_content, sources = await run_agent(db, current_user.id, llm_messages)
-
-    assistant_msg = await chat_service.create_assistant_message(
-        db, thread_id, current_user.id, assistant_content, sources
+    assistant_content, sources, input_tokens, output_tokens = await run_agent(
+        db, current_user.id, llm_messages
     )
 
-    # Auto-title the thread on the very first exchange.
+    assistant_msg = await chat_service.create_assistant_message(
+        db, thread_id, current_user.id, assistant_content, sources, input_tokens, output_tokens
+    )
+
     thread = await chat_service.get_thread(db, thread_id, current_user.id)
     if thread is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
@@ -202,6 +263,99 @@ async def create_thread_message(
         user_message=MessageResponse.model_validate(user_msg),
         assistant_message=MessageResponse.model_validate(assistant_msg),
         thread=ThreadResponse.model_validate(thread),
+    )
+
+
+@threads_router.post(
+    "/{thread_id}/messages/stream",
+    summary="Send a message and receive an SSE streaming response",
+)
+async def create_thread_message_stream(
+    thread_id: UUID,
+    body: MessageCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """
+    SSE streaming variant of POST /{thread_id}/messages.
+
+    Emits a sequence of Server-Sent Events:
+      {"type": "status",  "content": "🔍 Searching..."}   — node progress
+      {"type": "token",   "content": "..."}                — individual tokens
+      {"type": "done",    "user_message": {...},
+                          "assistant_message": {...},
+                          "thread": {...}}                  — final stored data
+      {"type": "error",   "content": "..."}                — on failure
+
+    The frontend falls back to the non-streaming endpoint if this one errors.
+    X-Accel-Buffering: no disables nginx response buffering for the stream.
+    """
+    msg_count_before = await chat_service.count_thread_messages(db, thread_id, current_user.id)
+
+    user_msg = await chat_service.create_message(db, thread_id, current_user.id, body.content)
+    if user_msg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+
+    history = await chat_service.list_messages(db, thread_id, current_user.id) or []
+    llm_messages: list[LLMMessage] = [
+        {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
+        for m in history
+    ]
+
+    user_msg_data = MessageResponse.model_validate(user_msg).model_dump(mode="json")
+
+    async def generate():
+        try:
+            final_answer = ""
+            final_sources = "llm_only"
+            final_input_tokens = 0
+            final_output_tokens = 0
+
+            async for event in stream_agent_events(db, current_user.id, llm_messages):
+                if event["type"] == "final":
+                    final_answer = event["answer"]
+                    final_sources = event["sources"]
+                    final_input_tokens = event.get("input_tokens", 0)
+                    final_output_tokens = event.get("output_tokens", 0)
+                else:
+                    yield f"data: {json.dumps(event)}\n\n"
+
+            assistant_msg = await chat_service.create_assistant_message(
+                db, thread_id, current_user.id, final_answer, final_sources,
+                final_input_tokens, final_output_tokens,
+            )
+
+            thread = await chat_service.get_thread(db, thread_id, current_user.id)
+            if msg_count_before == 0 and thread and thread.title == "New Chat":
+                llm_provider = get_llm_provider()
+                generated_title = await llm_provider.generate_title(body.content)
+                thread = await chat_service.rename_thread(
+                    db, thread_id, current_user.id, generated_title
+                ) or thread
+
+            done_payload = {
+                "type": "done",
+                "user_message": user_msg_data,
+                "assistant_message": MessageResponse.model_validate(assistant_msg).model_dump(
+                    mode="json"
+                ),
+                "thread": ThreadResponse.model_validate(thread).model_dump(mode="json")
+                if thread
+                else None,
+            }
+            yield f"data: {json.dumps(done_payload)}\n\n"
+
+        except Exception as exc:
+            logger.error("SSE stream error for thread %s: %s", thread_id, exc)
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Stream failed — please retry'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -242,17 +396,19 @@ async def update_chat_message(
         db, message_id, original.thread_id, current_user.id
     )
 
-    # History now ends with the updated user message.
     history = await chat_service.list_messages(db, original.thread_id, current_user.id) or []
     llm_messages: list[LLMMessage] = [
         {"role": m.role, "content": m.content}  # type: ignore[typeddict-item]
         for m in history
     ]
 
-    assistant_content, sources = await run_agent(db, current_user.id, llm_messages)
+    assistant_content, sources, input_tokens, output_tokens = await run_agent(
+        db, current_user.id, llm_messages
+    )
 
     assistant_msg = await chat_service.create_assistant_message(
-        db, original.thread_id, current_user.id, assistant_content, sources
+        db, original.thread_id, current_user.id, assistant_content, sources,
+        input_tokens, output_tokens,
     )
 
     return EditMessageResponse(
@@ -286,7 +442,6 @@ async def regenerate_message(
             detail="Only assistant messages can be regenerated",
         )
 
-    # History = everything before this assistant message in chronological order.
     history = await chat_service.list_messages_before(
         db, msg.thread_id, current_user.id, msg.created_at
     )
@@ -301,10 +456,12 @@ async def regenerate_message(
         for m in history
     ]
 
-    new_content, sources = await run_agent(db, current_user.id, llm_messages)
+    new_content, sources, input_tokens, output_tokens = await run_agent(
+        db, current_user.id, llm_messages
+    )
 
     updated_msg = await chat_service.replace_assistant_message(
-        db, message_id, current_user.id, new_content, sources
+        db, message_id, current_user.id, new_content, sources, input_tokens, output_tokens
     )
     if updated_msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")

@@ -18,6 +18,7 @@ class ThreadResponse(BaseModel):
     id: UUID
     user_id: UUID
     title: str
+    pinned: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -73,3 +74,15 @@ class RegenerateResponse(BaseModel):
     """Returned by POST /api/chat-messages/{message_id}/regenerate."""
 
     assistant_message: MessageResponse
+
+
+class DeleteAllChatsRequest(BaseModel):
+    """Body for DELETE /api/chat-threads — requires password confirmation."""
+
+    password: str
+
+
+class DeleteAllChatsResponse(BaseModel):
+    """Returned after DELETE /api/chat-threads."""
+
+    deleted_count: int

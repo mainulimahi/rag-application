@@ -14,3 +14,5 @@ class AgentState(TypedDict):
     web_results: list[dict]       # [{title, url, content}] from Tavily
     answer: str                   # Final synthesized answer
     sources: str                  # Which tools were used: llm_only | retrieval | web_search | both
+    input_tokens: int             # Prompt token count from the synthesis LLM call
+    output_tokens: int            # Completion token count from the synthesis LLM call

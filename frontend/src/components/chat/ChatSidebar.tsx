@@ -1,40 +1,119 @@
 'use client'
 
 import Link from 'next/link'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { API_URL } from '@/lib/api/client'
 import type { ChatThread, User } from '@/lib/types'
+
+const SIDEBAR_WIDTH_KEY = 'sidebar-width'
+const SIDEBAR_COLLAPSED_KEY = 'sidebar-collapsed'
+const MIN_WIDTH = 200
+const MAX_WIDTH = 400
+const DEFAULT_WIDTH = 260
 
 interface Props {
   threads: ChatThread[]
   selectedThreadId: string | null
+  hasPendingChat: boolean
   user: User | null
   threadsHasMore: boolean
   isLoadingMoreThreads: boolean
+  mobileOpen: boolean
   onSelectThread: (id: string) => void
   onNewChat: () => void
   onRenameThread: (id: string, title: string) => void
   onDeleteThread: (id: string) => void
+  onPinThread: (id: string) => void
   onLoadMoreThreads: () => void
   onLogout: () => void
+  onCloseMobile: () => void
 }
 
 export default function ChatSidebar({
   threads,
   selectedThreadId,
+  hasPendingChat,
   user,
   threadsHasMore,
   isLoadingMoreThreads,
+  mobileOpen,
   onSelectThread,
   onNewChat,
   onRenameThread,
   onDeleteThread,
+  onPinThread,
   onLoadMoreThreads,
   onLogout,
+  onCloseMobile,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [collapsed, setCollapsed] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH)
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const isDragging = useRef(false)
+  const startX = useRef(0)
+  const startWidth = useRef(DEFAULT_WIDTH)
+  const sidebarRef = useRef<HTMLElement>(null)
+
+  // Restore persisted state
+  useEffect(() => {
+    const savedCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY)
+    if (savedCollapsed === 'true') setCollapsed(true)
+
+    const savedWidth = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? '', 10)
+    if (!isNaN(savedWidth)) setSidebarWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, savedWidth)))
+  }, [])
+
+  // Apply inline width when not collapsed
+  useEffect(() => {
+    if (!sidebarRef.current) return
+    if (!collapsed) {
+      sidebarRef.current.style.width = `${sidebarWidth}px`
+      sidebarRef.current.style.minWidth = `${sidebarWidth}px`
+    } else {
+      sidebarRef.current.style.width = ''
+      sidebarRef.current.style.minWidth = ''
+    }
+  }, [sidebarWidth, collapsed])
+
+  function toggleCollapse() {
+    const next = !collapsed
+    setCollapsed(next)
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
+  }
+
+  // ── Resize handle drag ──────────────────────────────────────────────────────
+
+  function handleResizeMouseDown(e: React.MouseEvent) {
+    e.preventDefault()
+    isDragging.current = true
+    startX.current = e.clientX
+    startWidth.current = sidebarWidth
+
+    function onMouseMove(ev: MouseEvent) {
+      if (!isDragging.current) return
+      const delta = ev.clientX - startX.current
+      const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth.current + delta))
+      setSidebarWidth(newWidth)
+    }
+
+    function onMouseUp() {
+      isDragging.current = false
+      // Persist after drag ends
+      setSidebarWidth((w) => {
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w))
+        return w
+      })
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // ── Rename ──────────────────────────────────────────────────────────────────
 
   function startRename(thread: ChatThread) {
     setRenamingId(thread.id)
@@ -60,60 +139,64 @@ export default function ChatSidebar({
     }
   }
 
+  // ── Derived ─────────────────────────────────────────────────────────────────
+
+  const pinned = threads.filter((t) => t.pinned)
+  const unpinned = threads.filter((t) => !t.pinned)
+
   const initials = user
-    ? user.name
-        .split(' ')
-        .map((w) => w[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 2)
+    ? user.name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2)
     : '?'
 
   const avatarSrc = user?.profile_picture_url
     ? `${API_URL}${user.profile_picture_url}`
     : null
 
-  return (
-    <aside className="chat-sidebar">
-      <div className="chat-sidebar-header">
-        <button className="new-chat-btn" onClick={onNewChat}>
-          <PlusIcon />
-          New Chat
-        </button>
-      </div>
+  // ── Thread item render ──────────────────────────────────────────────────────
 
-      <div className="chat-sidebar-threads">
-        {threads.map((thread) => (
-          <div
-            key={thread.id}
-            className={`chat-thread-item${selectedThreadId === thread.id ? ' active' : ''}`}
-            onClick={() => {
-              if (renamingId !== thread.id) onSelectThread(thread.id)
-            }}
-          >
-            {renamingId === thread.id ? (
-              <input
-                ref={renameInputRef}
-                className="chat-rename-input"
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={handleRenameKeyDown}
-                onClick={(e) => e.stopPropagation()}
-                autoFocus
-              />
-            ) : (
-              <span className="chat-thread-title">{thread.title}</span>
-            )}
+  function ThreadItem({ thread }: { thread: ChatThread }) {
+    const isActive = selectedThreadId === thread.id
+    const isRenaming = renamingId === thread.id
 
-            <div className="chat-thread-actions" onClick={(e) => e.stopPropagation()}>
-              <button
-                className="chat-icon-btn"
-                title="Rename"
-                onClick={() => startRename(thread)}
-              >
-                <PencilIcon />
-              </button>
+    return (
+      <div
+        className={`chat-thread-item${isActive ? ' active' : ''}${thread.pinned ? ' pinned-item' : ''}`}
+        onClick={() => {
+          if (isRenaming) return
+          onSelectThread(thread.id)
+          if (mobileOpen) onCloseMobile()
+        }}
+        title={collapsed ? thread.title : undefined}
+      >
+        <span className="chat-thread-dot" />
+        {isRenaming ? (
+          <input
+            ref={renameInputRef}
+            className="chat-rename-input"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={handleRenameKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            autoFocus
+          />
+        ) : (
+          <span className="chat-thread-title">{thread.title}</span>
+        )}
+
+        {!isRenaming && (
+          <div className="chat-thread-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              className={`chat-icon-btn${thread.pinned ? ' pinned' : ''}`}
+              title={thread.pinned ? 'Unpin' : 'Pin'}
+              onClick={() => onPinThread(thread.id)}
+            >
+              <PinIcon pinned={thread.pinned} />
+            </button>
+            <button className="chat-icon-btn" title="Rename" onClick={() => startRename(thread)}>
+              <PencilIcon />
+            </button>
+            {!thread.pinned && (
               <button
                 className="chat-icon-btn danger"
                 title="Delete"
@@ -121,78 +204,132 @@ export default function ChatSidebar({
               >
                 <TrashIcon />
               </button>
-            </div>
+            )}
           </div>
-        ))}
-
-        {threads.length === 0 && (
-          <p
-            style={{
-              fontSize: '0.8125rem',
-              color: 'var(--color-text-muted)',
-              textAlign: 'center',
-              padding: '1.5rem 0.5rem',
-            }}
-          >
-            No conversations yet
-          </p>
-        )}
-
-        {threadsHasMore && (
-          <button
-            className="load-more-btn"
-            onClick={onLoadMoreThreads}
-            disabled={isLoadingMoreThreads}
-          >
-            {isLoadingMoreThreads ? 'Loading…' : 'Load more'}
-          </button>
         )}
       </div>
+    )
+  }
 
-      <div className="chat-sidebar-footer">
-        <Link href="/documents" className="sidebar-docs-link">
-          <FolderIcon />
-          Documents
-        </Link>
+  // ── Render ──────────────────────────────────────────────────────────────────
 
-        {/* User row: avatar + name + profile link */}
-        <div className="sidebar-user-row">
-          <Link href="/profile" className="sidebar-user-info" title="Edit profile">
-            <span className="sidebar-avatar">
-              {avatarSrc ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={avatarSrc}
-                  alt=""
-                  className="sidebar-avatar-img"
-                  crossOrigin="use-credentials"
-                />
-              ) : (
-                <span className="sidebar-avatar-initials">{initials}</span>
-              )}
-            </span>
-            <span className="sidebar-user-name">{user?.name ?? '…'}</span>
-          </Link>
-          <button className="logout-btn" onClick={onLogout} title="Sign out">
-            <LogoutIcon />
+  return (
+    <>
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div className="sidebar-backdrop" onClick={onCloseMobile} />
+      )}
+
+      <aside
+        ref={sidebarRef}
+        className={`chat-sidebar${collapsed ? ' collapsed' : ''}${mobileOpen ? ' mobile-open' : ''}`}
+      >
+        {/* Resize handle — only visible when not collapsed */}
+        {!collapsed && (
+          <div
+            className="chat-sidebar-resize-handle"
+            onMouseDown={handleResizeMouseDown}
+            role="separator"
+            aria-orientation="vertical"
+          />
+        )}
+
+        {/* Header: collapse toggle + new chat */}
+        <div className="chat-sidebar-header">
+          <button
+            className="sidebar-collapse-btn"
+            onClick={toggleCollapse}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+          </button>
+
+          <button
+            className="new-chat-btn"
+            onClick={() => {
+              onNewChat()
+              if (mobileOpen) onCloseMobile()
+            }}
+            title="New chat (Ctrl+K)"
+          >
+            <PlusIcon />
+            <span className="new-chat-btn-label">New Chat</span>
           </button>
         </div>
-      </div>
-    </aside>
+
+        {/* Threads list */}
+        <div className="chat-sidebar-threads">
+          {/* Pinned section */}
+          {pinned.length > 0 && (
+            <>
+              <div className="pinned-section-label">
+                <PinIcon pinned={true} size={10} />
+                Pinned
+              </div>
+              {pinned.map((t) => <ThreadItem key={t.id} thread={t} />)}
+              <div className="threads-divider" />
+            </>
+          )}
+
+          {/* Pending (unsaved) new chat — virtual item, no API call yet */}
+          {hasPendingChat && (
+            <div className="chat-thread-item active">
+              <span className="chat-thread-dot" />
+              <span className="chat-thread-title" style={{ fontStyle: 'italic', opacity: 0.85 }}>New Chat</span>
+            </div>
+          )}
+
+          {/* Recent / all threads */}
+          {unpinned.map((t) => <ThreadItem key={t.id} thread={t} />)}
+
+          {threads.length === 0 && !hasPendingChat && (
+            <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '1.5rem 0.5rem' }}>
+              No conversations yet
+            </p>
+          )}
+
+          {threadsHasMore && (
+            <button className="load-more-btn" onClick={onLoadMoreThreads} disabled={isLoadingMoreThreads}>
+              {isLoadingMoreThreads ? 'Loading…' : 'Load more'}
+            </button>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="chat-sidebar-footer">
+          <Link href="/documents" className="sidebar-docs-link" title="Documents">
+            <FolderIcon />
+            <span className="sidebar-docs-link-text">Documents</span>
+          </Link>
+
+          <div className="sidebar-user-row">
+            <Link href="/profile" className="sidebar-user-info" title="Edit profile">
+              <span className="sidebar-avatar">
+                {avatarSrc ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={avatarSrc} alt="" className="sidebar-avatar-img" crossOrigin="use-credentials" />
+                ) : (
+                  <span className="sidebar-avatar-initials">{initials}</span>
+                )}
+              </span>
+              <span className="sidebar-user-name">{user?.name ?? '…'}</span>
+            </Link>
+
+            <button className="logout-btn" onClick={onLogout} title="Sign out">
+              <LogoutIcon />
+            </button>
+          </div>
+        </div>
+      </aside>
+    </>
   )
 }
 
-function FolderIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-    </svg>
-  )
-}
+// ── Icons ─────────────────────────────────────────────────────────────────────
 
 function PlusIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0 }}>
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
     </svg>
@@ -219,6 +356,26 @@ function TrashIcon() {
   )
 }
 
+function PinIcon({ pinned, size = 13 }: { pinned: boolean; size?: number }) {
+  return pinned ? (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <path d="M12 2a5 5 0 0 1 5 5c0 2.76-1.79 5.11-4.25 5.77L12 20l-.75-7.23C8.79 12.11 7 9.76 7 7a5 5 0 0 1 5-5z" />
+    </svg>
+  ) : (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 2a5 5 0 0 1 5 5c0 2.76-1.79 5.11-4.25 5.77L12 20l-.75-7.23C8.79 12.11 7 9.76 7 7a5 5 0 0 1 5-5z" />
+    </svg>
+  )
+}
+
+function FolderIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
 function LogoutIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -228,3 +385,20 @@ function LogoutIcon() {
     </svg>
   )
 }
+
+function ChevronLeftIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  )
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  )
+}
+

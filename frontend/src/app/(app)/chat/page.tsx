@@ -8,6 +8,7 @@ import type { DisplayMessage } from '@/components/chat/ChatMessages'
 import ChatSidebar from '@/components/chat/ChatSidebar'
 import ChatMessages from '@/components/chat/ChatMessages'
 import ChatInput from '@/components/chat/ChatInput'
+import { showToast, ToastContainer } from '@/components/Toast'
 
 const PENDING_USER_ID = '__pending_user__'
 const PENDING_ASSISTANT_ID = '__pending_assistant__'
@@ -22,15 +23,21 @@ export default function ChatPage() {
   const [threadsPage, setThreadsPage] = useState(1)
   const [threadsHasMore, setThreadsHasMore] = useState(false)
   const [isLoadingMoreThreads, setIsLoadingMoreThreads] = useState(false)
+
+  // selectedThreadId === null means a pending (unsaved) new chat is active
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  // hasPendingChat === true when the user is on an unsaved new chat (no thread created yet)
+  const [hasPendingChat, setHasPendingChat] = useState(false)
+
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [messagesPage, setMessagesPage] = useState(1)
   const [messagesHasOlder, setMessagesHasOlder] = useState(false)
   const [isLoadingOlder, setIsLoadingOlder] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [streamingStatus, setStreamingStatus] = useState('')
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null)
-  const [chatError, setChatError] = useState<string | null>(null)
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   const initDone = useRef(false)
 
@@ -46,7 +53,7 @@ export default function ChatPage() {
 
   const selectThread = useCallback(async (threadId: string) => {
     setSelectedThreadId(threadId)
-    setChatError(null)
+    setHasPendingChat(false)
     setIsLoadingMessages(true)
     setMessagesPage(1)
     setMessagesHasOlder(false)
@@ -78,32 +85,44 @@ export default function ChatPage() {
         if (existing.length > 0) {
           await selectThread(existing[0].id)
         } else {
-          const thread = await chatApi.createThread()
-          setThreads([thread])
-          setSelectedThreadId(thread.id)
+          // No threads yet — show pending new chat without creating a DB row
+          setHasPendingChat(true)
           setMessages([])
         }
       } catch {
-        // Auth failure — middleware will redirect.
+        // Auth failure — middleware redirects to /login
       }
     }
 
     init()
   }, [loadThreads, selectThread])
 
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        handleNewChat()
+      }
+      if (e.key === 'Escape' && mobileOpen) {
+        setMobileOpen(false)
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mobileOpen])
+
   // ── Thread handlers ─────────────────────────────────────────────────────────
 
-  async function handleNewChat() {
-    try {
-      const thread = await chatApi.createThread()
-      setThreads((prev) => [thread, ...prev])
-      setSelectedThreadId(thread.id)
-      setMessages([])
-      setMessagesHasOlder(false)
-      setChatError(null)
-    } catch (err) {
-      setChatError(err instanceof Error ? err.message : 'Failed to create chat')
-    }
+  function handleNewChat() {
+    // If already showing a pending (unsaved) chat, do nothing — don't stack empties
+    if (hasPendingChat && !selectedThreadId) return
+    setSelectedThreadId(null)
+    setHasPendingChat(true)
+    setMessages([])
+    setMessagesHasOlder(false)
   }
 
   async function handleSelectThread(id: string) {
@@ -116,7 +135,17 @@ export default function ChatPage() {
       const updated = await chatApi.renameThread(id, title)
       setThreads((prev) => prev.map((t) => (t.id === id ? updated : t)))
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : 'Failed to rename chat')
+      showToast(err instanceof Error ? err.message : 'Failed to rename chat', 'error')
+    }
+  }
+
+  async function handlePinThread(id: string) {
+    try {
+      const updated = await chatApi.pinThread(id)
+      setThreads((prev) => prev.map((t) => (t.id === id ? updated : t)))
+      showToast(updated.pinned ? 'Thread pinned' : 'Thread unpinned', 'info')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to pin thread', 'error')
     }
   }
 
@@ -129,15 +158,19 @@ export default function ChatPage() {
         if (remaining.length > 0) {
           await selectThread(remaining[0].id)
         } else {
-          const thread = await chatApi.createThread()
-          setThreads([thread])
-          setSelectedThreadId(thread.id)
+          setSelectedThreadId(null)
+          setHasPendingChat(true)
           setMessages([])
           setMessagesHasOlder(false)
         }
       }
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : 'Failed to delete chat')
+      const msg = err instanceof Error ? err.message : 'Failed to delete chat'
+      if (msg.toLowerCase().includes('unpin')) {
+        showToast('Unpin this thread before deleting it', 'error')
+      } else {
+        showToast(msg, 'error')
+      }
     }
   }
 
@@ -151,7 +184,7 @@ export default function ChatPage() {
       setThreadsPage(nextPage)
       setThreadsHasMore(nextPage < data.pages)
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : 'Failed to load more chats')
+      showToast(err instanceof Error ? err.message : 'Failed to load more chats', 'error')
     } finally {
       setIsLoadingMoreThreads(false)
     }
@@ -163,27 +196,40 @@ export default function ChatPage() {
     try {
       const nextPage = messagesPage + 1
       const data = await chatApi.listMessages(selectedThreadId, nextPage, MESSAGES_LIMIT)
-      // Prepend older messages (they are already in chronological order within the page)
       setMessages((prev) => [...data.items, ...prev])
       setMessagesPage(nextPage)
       setMessagesHasOlder(nextPage < data.pages)
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : 'Failed to load older messages')
+      showToast(err instanceof Error ? err.message : 'Failed to load older messages', 'error')
     } finally {
       setIsLoadingOlder(false)
     }
   }
 
-  // ── Message handlers ────────────────────────────────────────────────────────
+  // ── Message sending: create thread lazily on first message ──────────────────
 
   async function handleSendMessage(content: string) {
-    if (!selectedThreadId || isGenerating) return
+    if (isGenerating) return
 
-    setChatError(null)
+    // If no thread exists yet, create one now (first message in pending chat)
+    let threadId = selectedThreadId
+    if (!threadId) {
+      if (!hasPendingChat) return
+      try {
+        const newThread = await chatApi.createThread()
+        setThreads((prev) => [newThread, ...prev])
+        setSelectedThreadId(newThread.id)
+        setHasPendingChat(false)
+        threadId = newThread.id
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Failed to create chat', 'error')
+        return
+      }
+    }
 
     const pendingUser: DisplayMessage = {
       id: PENDING_USER_ID,
-      thread_id: selectedThreadId,
+      thread_id: threadId,
       user_id: '',
       role: 'user',
       content,
@@ -194,7 +240,7 @@ export default function ChatPage() {
     }
     const pendingAssistant: DisplayMessage = {
       id: PENDING_ASSISTANT_ID,
-      thread_id: selectedThreadId,
+      thread_id: threadId,
       user_id: '',
       role: 'assistant',
       content: '',
@@ -202,34 +248,82 @@ export default function ChatPage() {
       edited_at: null,
       sources: null,
       isPending: true,
+      isStreaming: false,
     }
     setMessages((prev) => [...prev, pendingUser, pendingAssistant])
     setIsGenerating(true)
+    setStreamingStatus('')
 
     try {
-      const result = await chatApi.createMessage(selectedThreadId, content)
+      const stream = chatApi.streamMessage(threadId, content)
+      let streamingContent = ''
 
+      for await (const event of stream) {
+        if (event.type === 'status') {
+          setStreamingStatus(event.content)
+        } else if (event.type === 'token') {
+          streamingContent += event.content
+          const snapshot = streamingContent
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === PENDING_ASSISTANT_ID
+                ? { ...m, content: snapshot, isStreaming: true }
+                : m
+            )
+          )
+        } else if (event.type === 'done') {
+          setMessages((prev) => [
+            ...prev.filter((m) => !m.isPending),
+            event.user_message,
+            event.assistant_message,
+          ])
+          if (event.thread) {
+            setThreads((prev) =>
+              prev.map((t) => (t.id === threadId ? event.thread! : t))
+            )
+          }
+        } else if (event.type === 'error') {
+          throw new Error(event.content)
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : ''
+      if (msg.includes('Stream request failed')) {
+        await sendNonStreaming(threadId, content)
+        return
+      }
+      setMessages((prev) => prev.filter((m) => !m.isPending))
+      showToast(msg || 'Failed to send message', 'error')
+    } finally {
+      setIsGenerating(false)
+      setStreamingStatus('')
+    }
+  }
+
+  async function sendNonStreaming(threadId: string, content: string) {
+    try {
+      const result = await chatApi.createMessage(threadId, content)
       setMessages((prev) => [
         ...prev.filter((m) => !m.isPending),
         result.user_message,
         result.assistant_message,
       ])
-
       setThreads((prev) =>
-        prev.map((t) => (t.id === selectedThreadId ? result.thread : t)),
+        prev.map((t) => (t.id === threadId ? result.thread : t))
       )
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.isPending))
-      setChatError(err instanceof Error ? err.message : 'Failed to send message')
+      showToast(err instanceof Error ? err.message : 'Failed to send message', 'error')
     } finally {
       setIsGenerating(false)
+      setStreamingStatus('')
     }
   }
 
+  // ── Edit & regenerate ───────────────────────────────────────────────────────
+
   async function handleEditMessage(messageId: string, content: string) {
     if (isGenerating) return
-
-    setChatError(null)
 
     const pendingAssistant: DisplayMessage = {
       id: PENDING_ASSISTANT_ID,
@@ -247,7 +341,6 @@ export default function ChatPage() {
 
     try {
       const result = await chatApi.updateMessage(messageId, content)
-
       setMessages((prev) => {
         const deletedSet = new Set(result.deleted_message_ids)
         return [
@@ -259,7 +352,7 @@ export default function ChatPage() {
       })
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.isPending))
-      setChatError(err instanceof Error ? err.message : 'Failed to edit message')
+      showToast(err instanceof Error ? err.message : 'Failed to edit message', 'error')
     } finally {
       setIsGenerating(false)
     }
@@ -268,17 +361,16 @@ export default function ChatPage() {
   async function handleRegenerateMessage(messageId: string) {
     if (isGenerating) return
 
-    setChatError(null)
     setRegeneratingId(messageId)
     setIsGenerating(true)
 
     try {
       const result = await chatApi.regenerateMessage(messageId)
       setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? result.assistant_message : m)),
+        prev.map((m) => (m.id === messageId ? result.assistant_message : m))
       )
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : 'Failed to regenerate response')
+      showToast(err instanceof Error ? err.message : 'Failed to regenerate response', 'error')
     } finally {
       setRegeneratingId(null)
       setIsGenerating(false)
@@ -302,57 +394,62 @@ export default function ChatPage() {
       <ChatSidebar
         threads={threads}
         selectedThreadId={selectedThreadId}
+        hasPendingChat={hasPendingChat}
         user={user}
         threadsHasMore={threadsHasMore}
         isLoadingMoreThreads={isLoadingMoreThreads}
+        mobileOpen={mobileOpen}
         onSelectThread={handleSelectThread}
         onNewChat={handleNewChat}
         onRenameThread={handleRenameThread}
         onDeleteThread={handleDeleteThread}
+        onPinThread={handlePinThread}
         onLoadMoreThreads={handleLoadMoreThreads}
         onLogout={handleLogout}
+        onCloseMobile={() => setMobileOpen(false)}
       />
 
       <div className="chat-main">
-        {selectedThread ? (
-          <div className="chat-main-header">{selectedThread.title}</div>
-        ) : (
-          <div className="chat-main-header" style={{ color: 'var(--color-text-muted)' }}>
-            Loading…
-          </div>
-        )}
+        <div className="chat-main-header">
+          <button className="mobile-menu-btn" onClick={() => setMobileOpen(true)} title="Open sidebar">
+            <HamburgerIcon />
+          </button>
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {hasPendingChat && !selectedThreadId ? 'New Chat' : selectedThread?.title ?? 'Loading…'}
+          </span>
+        </div>
 
-        {chatError && (
-          <div className="chat-error-banner" role="alert">
-            {chatError}
-            <button className="chat-error-dismiss" onClick={() => setChatError(null)}>×</button>
-          </div>
-        )}
-
-        {isLoadingMessages ? (
-          <div className="chat-messages chat-empty-state">
-            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9375rem' }}>
-              Loading messages…
-            </p>
-          </div>
-        ) : (
-          <ChatMessages
-            messages={messages}
-            isGenerating={isGenerating}
-            regeneratingId={regeneratingId}
-            messagesHasOlder={messagesHasOlder}
-            isLoadingOlder={isLoadingOlder}
-            onEditMessage={handleEditMessage}
-            onRegenerateMessage={handleRegenerateMessage}
-            onLoadOlderMessages={handleLoadOlderMessages}
-          />
-        )}
+        <ChatMessages
+          messages={messages}
+          isGenerating={isGenerating}
+          streamingStatus={streamingStatus}
+          regeneratingId={regeneratingId}
+          messagesHasOlder={messagesHasOlder}
+          isLoadingOlder={isLoadingOlder}
+          isLoadingMessages={isLoadingMessages}
+          onEditMessage={handleEditMessage}
+          onRegenerateMessage={handleRegenerateMessage}
+          onLoadOlderMessages={handleLoadOlderMessages}
+          onSuggestedPrompt={(text) => handleSendMessage(text)}
+        />
 
         <ChatInput
           onSend={handleSendMessage}
-          disabled={!selectedThreadId || isGenerating}
+          disabled={isGenerating}
         />
       </div>
+
+      <ToastContainer />
     </div>
+  )
+}
+
+function HamburgerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
   )
 }

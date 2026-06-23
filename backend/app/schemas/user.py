@@ -51,3 +51,14 @@ class DeleteAccountRequest(BaseModel):
     """Request body for DELETE /api/users/me — password required for confirmation."""
 
     password: str
+
+
+class UserStatsResponse(BaseModel):
+    """Response for GET /api/users/me/stats."""
+
+    documents_count: int
+    total_chunks: int
+    responses_generated: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_tokens: int

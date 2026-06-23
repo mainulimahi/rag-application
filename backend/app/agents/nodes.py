@@ -161,8 +161,22 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
         google_api_key=settings.GEMINI_API_KEY,
         temperature=0.7,
     )
-    response = await llm.ainvoke(lc_messages)
-    answer = str(response.content)
+    # Use astream so astream_events captures individual tokens for the SSE streaming endpoint.
+    # The collected answer is identical to ainvoke for the non-streaming path.
+    # The last chunk from Gemini contains usage_metadata with token counts.
+    answer_parts: list[str] = []
+    input_tokens = 0
+    output_tokens = 0
+
+    async for chunk in llm.astream(lc_messages, config=config):
+        if chunk.content:
+            answer_parts.append(str(chunk.content))
+        # usage_metadata is populated on the final chunk by ChatGoogleGenerativeAI
+        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+            input_tokens = chunk.usage_metadata.get("input_tokens", 0) or 0
+            output_tokens = chunk.usage_metadata.get("output_tokens", 0) or 0
+
+    answer = "".join(answer_parts)
 
     # Determine final sources label
     has_docs = bool(state["retrieved_chunks"])
@@ -176,5 +190,13 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
     else:
         sources = "llm_only"
 
-    logger.info("agent.synthesis: sources=%s answer_len=%d", sources, len(answer))
-    return {"answer": answer, "sources": sources}
+    logger.info(
+        "agent.synthesis: sources=%s answer_len=%d tokens=(%d in / %d out)",
+        sources, len(answer), input_tokens, output_tokens,
+    )
+    return {
+        "answer": answer,
+        "sources": sources,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }

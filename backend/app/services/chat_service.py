@@ -70,19 +70,35 @@ async def rename_thread(
 
 async def delete_thread(
     db: AsyncSession, thread_id: UUID, user_id: UUID
-) -> bool:
+) -> bool | str:
     """
     Soft-delete a thread by setting deleted_at to the current time.
 
-    The thread and its messages remain in the DB but are hidden from all list
-    and get queries. Returns False if the thread doesn't exist or isn't owned by user_id.
+    Returns False if not found, the string "pinned" if the thread is pinned,
+    or True on success.
     """
     thread = await get_thread(db, thread_id, user_id)
     if thread is None:
         return False
+    if thread.pinned:
+        return "pinned"
     thread.deleted_at = datetime.now(timezone.utc)
     await db.commit()
     return True
+
+
+async def toggle_pin_thread(
+    db: AsyncSession, thread_id: UUID, user_id: UUID
+) -> "ChatThread | None":
+    """Toggle the pinned state of a thread. Returns None if not found or not owned."""
+    thread = await get_thread(db, thread_id, user_id)
+    if thread is None:
+        return None
+    thread.pinned = not thread.pinned
+    thread.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(thread)
+    return thread
 
 
 async def list_messages(
@@ -188,6 +204,8 @@ async def create_assistant_message(
     user_id: UUID,
     content: str,
     sources: str | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> ChatMessage:
     """
     Append an assistant message to a thread.
@@ -202,6 +220,8 @@ async def create_assistant_message(
         role="assistant",
         content=content,
         sources=sources,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
     db.add(message)
     thread = await get_thread(db, thread_id, user_id)
@@ -249,6 +269,44 @@ async def delete_messages_after(
         await db.commit()
 
     return deleted_ids
+
+
+async def delete_all_non_pinned_threads(db: AsyncSession, user_id: UUID) -> int:
+    """
+    Hard-delete all messages then soft-delete all non-pinned threads for the user.
+
+    Returns the number of threads soft-deleted.
+    """
+    # Find non-pinned, non-deleted thread IDs for the user
+    thread_result = await db.execute(
+        sa.select(ChatThread.id).where(
+            ChatThread.user_id == user_id,
+            ChatThread.deleted_at.is_(None),
+            ChatThread.pinned.is_(False),
+        )
+    )
+    thread_ids = list(thread_result.scalars().all())
+    if not thread_ids:
+        return 0
+
+    # Hard-delete their messages
+    await db.execute(
+        sa.delete(ChatMessage).where(
+            ChatMessage.thread_id.in_(thread_ids),
+            ChatMessage.user_id == user_id,
+        )
+    )
+
+    # Soft-delete the threads
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        sa.update(ChatThread)
+        .where(ChatThread.id.in_(thread_ids))
+        .values(deleted_at=now)
+    )
+
+    await db.commit()
+    return len(thread_ids)
 
 
 async def list_threads_paginated(
@@ -347,6 +405,8 @@ async def replace_assistant_message(
     user_id: UUID,
     new_content: str,
     sources: str | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> ChatMessage | None:
     """
     Replace the content (and sources) of an existing assistant message in-place.
@@ -368,6 +428,8 @@ async def replace_assistant_message(
         return None
     message.content = new_content
     message.sources = sources
+    message.input_tokens = input_tokens
+    message.output_tokens = output_tokens
     await db.commit()
     await db.refresh(message)
     return message

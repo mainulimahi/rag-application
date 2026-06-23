@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # App
     ENVIRONMENT: str = "local"
     LOG_LEVEL: str = "info"
+    FRONTEND_URL: str = "http://localhost"
 
     @property
     def database_url(self) -> str:

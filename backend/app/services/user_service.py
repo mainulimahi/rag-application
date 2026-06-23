@@ -130,6 +130,51 @@ async def mark_user_verified(db: AsyncSession, user: User) -> User:
     return user
 
 
+async def get_user_stats(db: AsyncSession, user_id: UUID) -> dict:
+    """
+    Return document count, total chunk count, and assistant message count for a user.
+
+    All queries are user-scoped (user_id filter) — no cross-tenant data leakage.
+    documents_count excludes soft-deleted rows (deleted_at IS NULL).
+    """
+    from app.models.document import Document, DocumentChunk
+    from app.models.chat import ChatMessage
+
+    docs_result = await db.execute(
+        sa.select(sa.func.count()).where(
+            Document.user_id == user_id,
+            Document.deleted_at.is_(None),
+        )
+    )
+    chunks_result = await db.execute(
+        sa.select(sa.func.count()).where(DocumentChunk.user_id == user_id)
+    )
+    messages_result = await db.execute(
+        sa.select(sa.func.count()).where(
+            ChatMessage.user_id == user_id,
+            ChatMessage.role == "assistant",
+        )
+    )
+    tokens_result = await db.execute(
+        sa.select(
+            sa.func.coalesce(sa.func.sum(ChatMessage.input_tokens), 0),
+            sa.func.coalesce(sa.func.sum(ChatMessage.output_tokens), 0),
+        ).where(
+            ChatMessage.user_id == user_id,
+            ChatMessage.role == "assistant",
+        )
+    )
+    total_input, total_output = tokens_result.one()
+    return {
+        "documents_count": docs_result.scalar() or 0,
+        "total_chunks": chunks_result.scalar() or 0,
+        "responses_generated": messages_result.scalar() or 0,
+        "total_input_tokens": int(total_input),
+        "total_output_tokens": int(total_output),
+        "total_tokens": int(total_input) + int(total_output),
+    }
+
+
 async def delete_user(db: AsyncSession, user_id: UUID) -> None:
     """
     Hard-delete a user and all their data in FK-safe order.

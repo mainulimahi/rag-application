@@ -28,8 +28,8 @@ function VerifyEmailContent() {
     authApi.verifyEmail(token)
       .then(() => {
         setStatus('success')
-        setMessage('Email verified! Redirecting you to the app…')
-        setTimeout(() => router.push('/chat'), 1500)
+        setMessage('Email verified successfully! You can now sign in.')
+        setTimeout(() => router.push('/login'), 2500)
       })
       .catch((err: unknown) => {
         setStatus('error')
@@ -49,8 +49,11 @@ function VerifyEmailContent() {
 
   if (status === 'success') {
     return (
-      <AuthCard title="Email verified!" subtitle="Welcome to RAG Application">
+      <AuthCard title="Email verified!" subtitle="Redirecting you to sign in…">
         <Alert type="success" message={message} />
+        <p style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '0.875rem', color: 'var(--color-text-muted)' }}>
+          <Link href="/login" style={{ fontWeight: 500 }}>Sign in now</Link>
+        </p>
       </AuthCard>
     )
   }

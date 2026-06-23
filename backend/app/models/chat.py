@@ -26,6 +26,9 @@ class ChatThread(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    pinned: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
 
 
 class ChatMessage(Base):
@@ -45,3 +48,9 @@ class ChatMessage(Base):
         sa.DateTime(timezone=True), nullable=True
     )
     sources: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, server_default=sa.text("0")
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, server_default=sa.text("0")
+    )

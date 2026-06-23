@@ -9,7 +9,7 @@ from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.auth import MessageResponse
-from app.schemas.user import DeleteAccountRequest, PasswordChangeRequest, UserResponse, UserUpdate
+from app.schemas.user import DeleteAccountRequest, PasswordChangeRequest, UserResponse, UserStatsResponse, UserUpdate
 from app.services import auth_service, user_service
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -176,6 +176,20 @@ async def delete_me(
     await user_service.delete_user(db, user_id)
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
+
+
+@router.get(
+    "/me/stats",
+    response_model=UserStatsResponse,
+    summary="Get aggregate stats for the current user",
+)
+async def get_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> UserStatsResponse:
+    """Return documents_count, total_chunks, and responses_generated for the authenticated user."""
+    stats = await user_service.get_user_stats(db, current_user.id)
+    return UserStatsResponse(**stats)
 
 
 @router.get(

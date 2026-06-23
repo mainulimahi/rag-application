@@ -3,13 +3,18 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { API_URL, usersApi } from '@/lib/api/client'
-import type { User } from '@/lib/types'
+import { API_URL, chatApi, usersApi } from '@/lib/api/client'
+import type { User, UserStats } from '@/lib/types'
 
 export default function ProfilePage() {
   const router = useRouter()
   const [user, setUser] = useState<User | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [stats, setStats] = useState<UserStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(true)
+
+  // Theme state
+  const [theme, setTheme] = useState<'light' | 'dark'>('light')
 
   // Name edit state
   const [editingName, setEditingName] = useState(false)
@@ -22,6 +27,12 @@ export default function ProfilePage() {
   const [avatarUploading, setAvatarUploading] = useState(false)
   const [avatarError, setAvatarError] = useState('')
   const avatarInputRef = useRef<HTMLInputElement>(null)
+
+  // Delete all chats state
+  const [showDeleteChatsDialog, setShowDeleteChatsDialog] = useState(false)
+  const [deleteChatsPassword, setDeleteChatsPassword] = useState('')
+  const [deleteChatsError, setDeleteChatsError] = useState('')
+  const [deleteChatsLoading, setDeleteChatsLoading] = useState(false)
 
   // Delete account state
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -42,7 +53,24 @@ export default function ProfilePage() {
     usersApi.me()
       .then(setUser)
       .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load profile'))
+
+    usersApi.stats()
+      .then(setStats)
+      .catch(() => setStats({
+        documents_count: 0, total_chunks: 0, responses_generated: 0,
+        total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0,
+      }))
+      .finally(() => setStatsLoading(false))
+
+    const t = document.documentElement.getAttribute('data-theme')
+    if (t === 'dark' || t === 'light') setTheme(t)
   }, [])
+
+  function applyTheme(next: 'light' | 'dark') {
+    setTheme(next)
+    document.documentElement.setAttribute('data-theme', next)
+    localStorage.setItem('theme', next)
+  }
 
   function startEditName() {
     if (!user) return
@@ -101,6 +129,26 @@ export default function ProfilePage() {
     } finally {
       setAvatarUploading(false)
       if (avatarInputRef.current) avatarInputRef.current.value = ''
+    }
+  }
+
+  async function handleDeleteAllChats(e: React.FormEvent) {
+    e.preventDefault()
+    setDeleteChatsError('')
+    if (!deleteChatsPassword) {
+      setDeleteChatsError('Password is required')
+      return
+    }
+    setDeleteChatsLoading(true)
+    try {
+      const result = await chatApi.deleteAllChats(deleteChatsPassword)
+      setShowDeleteChatsDialog(false)
+      setDeleteChatsPassword('')
+      alert(`Deleted ${result.deleted_count} chat${result.deleted_count !== 1 ? 's' : ''}.`)
+    } catch (err) {
+      setDeleteChatsError(err instanceof Error ? err.message : 'Failed to delete chats')
+    } finally {
+      setDeleteChatsLoading(false)
     }
   }
 
@@ -191,6 +239,12 @@ export default function ProfilePage() {
     .toUpperCase()
     .slice(0, 2)
 
+  function fmtTokens(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+    return String(n)
+  }
+
   return (
     <div className="profile-page">
       <div className="profile-page-header">
@@ -273,6 +327,73 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        {/* Stats section */}
+        <div className="profile-field">
+          <label className="profile-field-label">Usage</label>
+          {statsLoading ? (
+            <div className="profile-stats-grid">
+              <div className="skeleton skeleton-stat" />
+              <div className="skeleton skeleton-stat" />
+              <div className="skeleton skeleton-stat" />
+              <div className="skeleton skeleton-stat" />
+              <div className="skeleton skeleton-stat" />
+              <div className="skeleton skeleton-stat" />
+            </div>
+          ) : (
+            <div className="profile-stats-grid">
+              <div className="profile-stat-card">
+                <span className="profile-stat-value">{stats?.documents_count ?? 0}</span>
+                <span className="profile-stat-label">📄 Documents</span>
+              </div>
+              <div className="profile-stat-card">
+                <span className="profile-stat-value">{stats?.total_chunks ?? 0}</span>
+                <span className="profile-stat-label">🧩 Chunks indexed</span>
+              </div>
+              <div className="profile-stat-card">
+                <span className="profile-stat-value">{stats?.responses_generated ?? 0}</span>
+                <span className="profile-stat-label">💬 Responses</span>
+              </div>
+              <div className="profile-stat-card">
+                <span className="profile-stat-value">{fmtTokens(stats?.total_input_tokens ?? 0)}</span>
+                <span className="profile-stat-label">⬆ Input tokens</span>
+              </div>
+              <div className="profile-stat-card">
+                <span className="profile-stat-value">{fmtTokens(stats?.total_output_tokens ?? 0)}</span>
+                <span className="profile-stat-label">⬇ Output tokens</span>
+              </div>
+              <div className="profile-stat-card">
+                <span className="profile-stat-value">{fmtTokens(stats?.total_tokens ?? 0)}</span>
+                <span className="profile-stat-label">🔢 Total tokens</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Appearance section */}
+        <div className="profile-field">
+          <label className="profile-field-label">Appearance</label>
+          <div className="profile-theme-row">
+            <button
+              className={`profile-theme-card${theme === 'light' ? ' active' : ''}`}
+              onClick={() => applyTheme('light')}
+              type="button"
+            >
+              <span style={{ fontSize: '1.25rem' }}>☀️</span>
+              <span>Light</span>
+              {theme === 'light' && <span className="profile-theme-check">✓</span>}
+            </button>
+            <button
+              className={`profile-theme-card${theme === 'dark' ? ' active' : ''}`}
+              onClick={() => applyTheme('dark')}
+              type="button"
+            >
+              <span style={{ fontSize: '1.25rem' }}>🌙</span>
+              <span>Dark</span>
+              {theme === 'dark' && <span className="profile-theme-check">✓</span>}
+            </button>
+          </div>
+        </div>
+
         {/* Password section */}
         <div className="profile-field">
           <label className="profile-field-label">Password</label>
@@ -338,9 +459,67 @@ export default function ProfilePage() {
 
       {/* Danger zone */}
       <div className="profile-card" style={{ borderColor: 'var(--color-error)', marginTop: '1.5rem' }}>
-        <h2 style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--color-error)', marginBottom: '0.75rem' }}>
+        <h2 style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--color-error)', marginBottom: '1rem' }}>
           Danger zone
         </h2>
+
+        {/* Delete all chats */}
+        <div style={{ marginBottom: '1.25rem', paddingBottom: '1.25rem', borderBottom: '1px solid var(--color-border)' }}>
+          {!showDeleteChatsDialog ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
+              <div>
+                <p style={{ fontSize: '0.875rem', fontWeight: 500, margin: 0 }}>Delete all chats</p>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', margin: '0.25rem 0 0' }}>
+                  Delete all non-pinned conversations. Pinned threads are kept.
+                </p>
+              </div>
+              <button
+                className="msg-action-btn"
+                style={{ color: 'var(--color-error)', borderColor: 'var(--color-error)', whiteSpace: 'nowrap' }}
+                onClick={() => { setShowDeleteChatsDialog(true); setDeleteChatsError('') }}
+              >
+                Delete all chats
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleDeleteAllChats}>
+              <p style={{ fontSize: '0.875rem', marginBottom: '0.75rem', color: 'var(--color-text-muted)' }}>
+                Enter your password to confirm deletion of all non-pinned chats.
+              </p>
+              <input
+                className="profile-field-input"
+                type="password"
+                placeholder="Your current password"
+                value={deleteChatsPassword}
+                onChange={(e) => setDeleteChatsPassword(e.target.value)}
+                disabled={deleteChatsLoading}
+                autoComplete="current-password"
+                autoFocus
+              />
+              {deleteChatsError && <p className="profile-field-error" style={{ marginTop: '0.5rem' }}>{deleteChatsError}</p>}
+              <div className="profile-field-actions" style={{ marginTop: '0.75rem' }}>
+                <button
+                  type="button"
+                  className="msg-action-btn"
+                  onClick={() => { setShowDeleteChatsDialog(false); setDeleteChatsPassword(''); setDeleteChatsError('') }}
+                  disabled={deleteChatsLoading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="msg-action-btn"
+                  style={{ color: '#fff', background: 'var(--color-error)', borderColor: 'var(--color-error)' }}
+                  disabled={deleteChatsLoading}
+                >
+                  {deleteChatsLoading ? 'Deleting…' : 'Yes, delete all chats'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+
+        {/* Delete account */}
         {!showDeleteDialog ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
             <div>
