@@ -42,6 +42,7 @@ class MessageResponse(BaseModel):
     created_at: datetime
     edited_at: datetime | None
     sources: str | None = None
+    data_analysis: dict | None = None
 
     model_config = {"from_attributes": True}
 

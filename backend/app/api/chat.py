@@ -240,8 +240,8 @@ async def create_thread_message(
         for m in history
     ]
 
-    assistant_content, sources, input_tokens, output_tokens = await run_agent(
-        db, current_user.id, llm_messages
+    assistant_content, sources, input_tokens, output_tokens, data_analysis_result = (
+        await run_agent(db, current_user.id, llm_messages)
     )
 
     assistant_msg = await chat_service.create_assistant_message(
@@ -259,9 +259,12 @@ async def create_thread_message(
             db, thread_id, current_user.id, generated_title
         ) or thread
 
+    assistant_response = MessageResponse.model_validate(assistant_msg)
+    assistant_response.data_analysis = data_analysis_result
+
     return MessagePairResponse(
         user_message=MessageResponse.model_validate(user_msg),
-        assistant_message=MessageResponse.model_validate(assistant_msg),
+        assistant_message=assistant_response,
         thread=ThreadResponse.model_validate(thread),
     )
 
@@ -310,6 +313,7 @@ async def create_thread_message_stream(
             final_sources = "llm_only"
             final_input_tokens = 0
             final_output_tokens = 0
+            final_data_analysis: dict | None = None
 
             async for event in stream_agent_events(db, current_user.id, llm_messages):
                 if event["type"] == "final":
@@ -317,6 +321,7 @@ async def create_thread_message_stream(
                     final_sources = event["sources"]
                     final_input_tokens = event.get("input_tokens", 0)
                     final_output_tokens = event.get("output_tokens", 0)
+                    final_data_analysis = event.get("data_analysis_result")
                 else:
                     yield f"data: {json.dumps(event)}\n\n"
 
@@ -333,15 +338,17 @@ async def create_thread_message_stream(
                     db, thread_id, current_user.id, generated_title
                 ) or thread
 
+            assistant_msg_response = MessageResponse.model_validate(assistant_msg)
+            assistant_msg_response.data_analysis = final_data_analysis
+
             done_payload = {
                 "type": "done",
                 "user_message": user_msg_data,
-                "assistant_message": MessageResponse.model_validate(assistant_msg).model_dump(
-                    mode="json"
-                ),
+                "assistant_message": assistant_msg_response.model_dump(mode="json"),
                 "thread": ThreadResponse.model_validate(thread).model_dump(mode="json")
                 if thread
                 else None,
+                "data_analysis": final_data_analysis,
             }
             yield f"data: {json.dumps(done_payload)}\n\n"
 
@@ -402,8 +409,8 @@ async def update_chat_message(
         for m in history
     ]
 
-    assistant_content, sources, input_tokens, output_tokens = await run_agent(
-        db, current_user.id, llm_messages
+    assistant_content, sources, input_tokens, output_tokens, data_analysis_result = (
+        await run_agent(db, current_user.id, llm_messages)
     )
 
     assistant_msg = await chat_service.create_assistant_message(
@@ -411,9 +418,12 @@ async def update_chat_message(
         input_tokens, output_tokens,
     )
 
+    assistant_response = MessageResponse.model_validate(assistant_msg)
+    assistant_response.data_analysis = data_analysis_result
+
     return EditMessageResponse(
         updated_message=MessageResponse.model_validate(updated_msg),
-        assistant_message=MessageResponse.model_validate(assistant_msg),
+        assistant_message=assistant_response,
         deleted_message_ids=deleted_ids,
     )
 
@@ -456,8 +466,8 @@ async def regenerate_message(
         for m in history
     ]
 
-    new_content, sources, input_tokens, output_tokens = await run_agent(
-        db, current_user.id, llm_messages
+    new_content, sources, input_tokens, output_tokens, data_analysis_result = (
+        await run_agent(db, current_user.id, llm_messages)
     )
 
     updated_msg = await chat_service.replace_assistant_message(
@@ -466,4 +476,7 @@ async def regenerate_message(
     if updated_msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
 
-    return RegenerateResponse(assistant_message=MessageResponse.model_validate(updated_msg))
+    assistant_response = MessageResponse.model_validate(updated_msg)
+    assistant_response.data_analysis = data_analysis_result
+
+    return RegenerateResponse(assistant_message=assistant_response)

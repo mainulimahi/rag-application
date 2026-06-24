@@ -21,7 +21,7 @@ from app.services.embedding_service import get_embedding_provider
 
 logger = logging.getLogger(__name__)
 
-_VALID_ROUTES = frozenset({"llm_only", "retrieval", "web_search", "both"})
+_VALID_ROUTES = frozenset({"llm_only", "retrieval", "web_search", "both", "data_analysis"})
 
 _ROUTER_PROMPT = """You are a query router for a RAG assistant. Decide which tool(s) to use.
 
@@ -30,11 +30,12 @@ Routing options:
 - "retrieval": The answer likely exists in the user's uploaded documents (user HAS documents available). Use for domain-specific, private, or uploaded content.
 - "web_search": Requires current/real-time information — news, prices, live data, recent events, weather, stock prices, anything after training cutoff.
 - "both": Needs the user's documents AND real-time web information together.
+- "data_analysis": The query is about analysing data, numbers, statistics, trends, averages, totals, counts, charts, SQL queries, database questions, or anything that requires querying structured data files or connected databases.
 
 User has uploaded documents available: {has_docs}
 User query: {query}
 
-Respond with exactly one word — one of: llm_only, retrieval, web_search, both"""
+Respond with exactly one word — one of: llm_only, retrieval, web_search, both, data_analysis"""
 
 _SYNTHESIS_SYSTEM = (
     "You are a knowledgeable assistant. Answer the user's question using the provided context. "
@@ -118,12 +119,34 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     Combine retrieved context with conversation history and generate a final answer.
 
-    Builds a context block from document chunks and/or web results, prepends it
-    as a system message, then calls the Gemini LLM with the full chat history.
+    Builds a context block from document chunks, web results, and/or data analysis
+    results, prepends it as a system message, then calls the Gemini LLM with the
+    full chat history.
     """
 
     # Build context block from whichever tools ran
     context_parts: list[str] = []
+
+    data_result = state.get("data_analysis_result")
+
+    if data_result and "error" not in data_result:
+        stats_summary = ", ".join(
+            f"{col}: {list(stats.values())[:2]}" for col, stats in (data_result.get("summary_stats") or {}).items()
+        )
+        context_parts.append(
+            f"## Data analysis result:\n"
+            f"SQL executed: {data_result['sql']}\n"
+            f"Rows returned: {data_result['row_count']} (of {data_result['total_row_count']} total"
+            + (" — truncated to 500" if data_result.get('truncated') else "") + ")\n"
+            f"Columns: {', '.join(data_result.get('columns', []))}\n"
+            f"Summary stats: {stats_summary or '(none)'}"
+        )
+    elif data_result and data_result.get("error") == "no_sources":
+        context_parts.append(
+            "## Data sources:\n"
+            "The user has no data files or connections yet. "
+            "Suggest they upload a file or add a connection in the Data Sources page."
+        )
 
     if state["retrieved_chunks"]:
         doc_lines = "\n\n".join(
@@ -181,7 +204,10 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
     # Determine final sources label
     has_docs = bool(state["retrieved_chunks"])
     has_web = bool(state["web_results"])
-    if has_docs and has_web:
+    has_data = bool(data_result and "error" not in data_result)
+    if has_data:
+        sources = "data_analysis"
+    elif has_docs and has_web:
         sources = "both"
     elif has_docs:
         sources = "retrieval"
