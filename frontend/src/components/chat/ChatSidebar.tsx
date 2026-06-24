@@ -301,6 +301,10 @@ export default function ChatSidebar({
             <FolderIcon />
             <span className="sidebar-docs-link-text">Documents</span>
           </Link>
+          <Link href="/data-sources" className="sidebar-docs-link" title="Data Sources">
+            <DatabaseIcon />
+            <span className="sidebar-docs-link-text">Data Sources</span>
+          </Link>
 
           <div className="sidebar-user-row">
             <Link href="/profile" className="sidebar-user-info" title="Edit profile">
@@ -372,6 +376,16 @@ function FolderIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+function DatabaseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12" />
+      <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
     </svg>
   )
 }

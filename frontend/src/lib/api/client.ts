@@ -5,6 +5,9 @@ import type {
   ApiError,
   ChatMessage,
   ChatThread,
+  DataFile,
+  DataFileStatus,
+  DataSource,
   DeleteAllChatsResponse,
   DocumentListItem,
   DocumentStatusResponse,
@@ -14,6 +17,7 @@ import type {
   PaginatedResponse,
   RegenerateResponse,
   StreamEvent,
+  TestConnectionResult,
   User,
   UserStats,
 } from '@/lib/types'
@@ -263,6 +267,84 @@ export const chatApi = {
     apiFetch<RegenerateResponse>(`/api/chat-messages/${messageId}/regenerate`, {
       method: 'POST',
     }),
+}
+
+export const dataFilesApi = {
+  upload: async (file: File): Promise<DataFile> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch(`${API_URL}/api/data-files/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    })
+    const text = await res.text()
+    let data: unknown
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      throw new Error(text || `Upload failed (${res.status})`)
+    }
+    if (!res.ok) {
+      const err = data as ApiError | null
+      const detail = err?.detail
+      throw new Error(
+        detail != null ? extractErrorMessage(detail) : `Upload failed (${res.status})`,
+      )
+    }
+    return data as DataFile
+  },
+
+  list: () => apiFetch<DataFile[]>('/api/data-files'),
+
+  getSchema: (fileId: string) => apiFetch<DataFile>(`/api/data-files/${fileId}/schema`),
+
+  getStatus: (fileId: string) => apiFetch<DataFileStatus>(`/api/data-files/${fileId}/status`),
+
+  delete: async (fileId: string): Promise<void> => {
+    const res = await fetch(`${API_URL}/api/data-files/${fileId}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const data = (await res.json()) as ApiError
+      throw new Error(
+        data?.detail != null ? extractErrorMessage(data.detail) : `Delete failed (${res.status})`,
+      )
+    }
+  },
+}
+
+export const dataSourcesApi = {
+  list: () => apiFetch<DataSource[]>('/api/data-sources'),
+
+  create: (data: { name: string; source_type: string; connection_config: Record<string, unknown> }) =>
+    apiFetch<DataSource>('/api/data-sources', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: string, data: { name?: string; connection_config?: Record<string, unknown> }) =>
+    apiFetch<DataSource>(`/api/data-sources/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  delete: async (id: string): Promise<void> => {
+    const res = await fetch(`${API_URL}/api/data-sources/${id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const data = (await res.json()) as ApiError
+      throw new Error(
+        data?.detail != null ? extractErrorMessage(data.detail) : `Delete failed (${res.status})`,
+      )
+    }
+  },
+
+  test: (id: string) =>
+    apiFetch<TestConnectionResult>(`/api/data-sources/${id}/test`, { method: 'POST' }),
 }
 
 export const documentApi = {

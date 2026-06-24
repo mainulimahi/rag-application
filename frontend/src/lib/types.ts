@@ -95,6 +95,65 @@ export interface DeleteAllChatsResponse {
   deleted_count: number
 }
 
+// ── Data Sources (v2) ─────────────────────────────────────────────────────────
+
+export type DataSourceType =
+  | 'postgresql'
+  | 'mysql'
+  | 'sqlite'
+  | 's3'
+  | 'gcs'
+  | 'azure_blob'
+  | 'api'
+
+export interface DataSource {
+  id: string
+  name: string
+  source_type: DataSourceType
+  last_tested_at: string | null
+  last_test_status: 'ok' | 'error' | null
+  last_test_error: string | null
+  created_at: string
+  updated_at: string
+  schema_cache?: Record<string, unknown> | null
+}
+
+export interface TestConnectionResult {
+  status: 'ok' | 'error'
+  message: string
+  tables_found?: number | null
+  schema_summary?: Record<string, unknown> | null
+}
+
+export interface DataFileSchemaColumn {
+  column_name: string
+  column_type: string
+  sample_values?: unknown[] | null
+  null_count?: number | null
+  unique_count?: number | null
+}
+
+export interface DataFile {
+  id: string
+  filename: string
+  file_size: number
+  content_type: string
+  status: 'processing' | 'ready' | 'failed'
+  processing_error: string | null
+  row_count: number | null
+  column_count: number
+  uploaded_at: string
+  columns?: DataFileSchemaColumn[]
+}
+
+export interface DataFileStatus {
+  id: string
+  status: 'processing' | 'ready' | 'failed'
+  processing_error: string | null
+  row_count: number | null
+  column_count: number
+}
+
 // ── SSE streaming events ──────────────────────────────────────────────────────
 
 export type StreamEvent =
