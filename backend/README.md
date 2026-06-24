@@ -16,7 +16,7 @@ app/
 └── main.py       FastAPI entrypoint
 ```
 
-The `api/` layer only validates inputs and calls `services/`. Business logic lives entirely in `services/`. The `agents/` package is called by `chat_service` when a message is sent and has no knowledge of HTTP.
+The `api/` layer only validates inputs and calls `services/`. Business logic lives entirely in `services/`. The `agents/` package is called by the chat API when a message is sent and has no knowledge of HTTP.
 
 ## API Endpoints
 
@@ -44,18 +44,22 @@ All routes are prefixed with `/api`. No `/v1` version prefix. Interactive docs a
 | PATCH | `/api/users/me/password` | Change password. Requires current password. Validates strength (8+ chars, upper, lower, digit). |
 | POST | `/api/users/me/avatar` | Upload a profile picture (JPEG/PNG/WebP, max 5 MB). Stored as `bytea` in Postgres. Magic-byte validated. |
 | GET | `/api/users/me/avatar` | Serve the user's avatar image with the correct `Content-Type`. Returns 404 if no avatar set. |
+| GET | `/api/users/me/stats` | Return aggregate usage stats: document count, total chunks, responses generated, total input tokens, total output tokens. |
 | DELETE | `/api/users/me` | Permanently delete the account and all data. Requires current password. Deletion order: refresh_tokens → document_chunks → documents → chat_messages → chat_threads → user. |
 
 ### Chat Threads — `/api/chat-threads/...`
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/chat-threads` | List all threads for the current user, newest first. Paginated. Excludes soft-deleted threads. |
+| GET | `/api/chat-threads` | List all non-deleted threads for the current user, newest first. Paginated. |
 | POST | `/api/chat-threads` | Create a new thread with a provided title. |
 | PATCH | `/api/chat-threads/{thread_id}` | Rename a thread. |
-| DELETE | `/api/chat-threads/{thread_id}` | Soft-delete a thread (sets `deleted_at`). Thread and messages are not physically removed. |
+| PATCH | `/api/chat-threads/{thread_id}/pin` | Toggle the pinned state of a thread. Returns the updated thread. Pinned threads appear in a separate section and cannot be deleted. |
+| DELETE | `/api/chat-threads/{thread_id}` | Soft-delete a single thread (sets `deleted_at`). Returns 400 if the thread is pinned. |
+| DELETE | `/api/chat-threads` | Soft-delete all non-pinned threads and hard-delete their messages. Body: `{ "password": "..." }`. Returns `{ "deleted_count": N }`. |
 | GET | `/api/chat-threads/{thread_id}/messages` | List messages in a thread. Paginated, oldest first. |
-| POST | `/api/chat-threads/{thread_id}/messages` | Send a user message and run the LangGraph agent. Returns both the saved user message and the assistant response. Auto-generates thread title after the first message. |
+| POST | `/api/chat-threads/{thread_id}/messages` | Send a user message and run the LangGraph agent synchronously. Returns both the saved user message and the assistant response. Auto-generates thread title after the first message. |
+| POST | `/api/chat-threads/{thread_id}/messages/stream` | Send a user message and stream the LangGraph agent response as Server-Sent Events. See [Streaming](#streaming) below. |
 
 ### Chat Messages — `/api/chat-messages/...`
 
@@ -68,7 +72,7 @@ All routes are prefixed with `/api`. No `/v1` version prefix. Interactive docs a
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/documents/upload` | Upload a document (multipart/form-data). Returns 202 immediately; processing runs in a `BackgroundTask`. |
+| POST | `/api/documents/upload` | Upload a document (multipart/form-data, max 20 MB). Returns 202 immediately; processing runs in a `BackgroundTask`. |
 | GET | `/api/documents` | List the current user's non-deleted documents with chunk counts. Paginated. |
 | GET | `/api/documents/{document_id}/status` | Poll processing status: `processing`, `ready`, or `failed`. |
 | DELETE | `/api/documents/{document_id}` | Soft-delete the document and immediately hard-delete all its chunks (prevents stale RAG results). |
@@ -79,19 +83,37 @@ All routes are prefixed with `/api`. No `/v1` version prefix. Interactive docs a
 |---|---|---|
 | GET | `/health` | Liveness + readiness probe. Returns `{"status":"healthy","database":"connected","version":"1.0.0"}` or 503 if the database is unreachable. |
 
+## Streaming
+
+`POST /api/chat-threads/{thread_id}/messages/stream` returns a `text/event-stream` response. Each event is a `data: <json>\n\n` line. Event shapes:
+
+```
+{"type": "status",  "content": "🤔 Thinking…"}
+{"type": "token",   "content": "<partial LLM token>"}
+{"type": "done",    "user_message": {...}, "assistant_message": {...}, "thread": {...}}
+{"type": "error",   "content": "<error message>"}
+```
+
+- `status` — emitted at the start of each agent node (Thinking, Searching documents, Searching web, Writing response)
+- `token` — individual LLM output token from the synthesis node, enabling character-by-character streaming in the UI
+- `done` — emitted after the assistant message is saved to the database; includes full user and assistant message objects
+- `error` — emitted if the agent raises an unhandled exception
+
+The nginx reverse proxy sets `proxy_buffering off` on the SSE location block so tokens reach the browser immediately without buffering.
+
 ## Service Layer
 
 Each service file has a single responsibility:
 
 **`auth_service.py`** — Cryptography and token lifecycle. `hash_password` / `verify_password` (bcrypt). `create_access_token` / `create_refresh_token` (JWT). `store_refresh_token` (saves SHA-256 hash), `get_valid_refresh_token`, `revoke_refresh_token`. `generate_reset_token` / `reset_token_expiry`.
 
-**`user_service.py`** — User CRUD. `get_user_by_email`, `get_user_by_id`, `get_user_by_reset_token`, `get_user_by_verification_token`. `create_user`, `update_user_*` (name, avatar, password, reset_token, verification_token). `mark_user_verified`. `delete_user` (FK-safe cascade delete).
+**`user_service.py`** — User CRUD. `get_user_by_email`, `get_user_by_id`, `get_user_by_reset_token`, `get_user_by_verification_token`. `create_user`, `update_user_*` (name, avatar, password, reset_token, verification_token). `mark_user_verified`. `get_user_stats` (aggregates documents, chunks, assistant messages, and token sums). `delete_user` (FK-safe cascade delete).
 
-**`chat_service.py`** — Thread and message CRUD. `list_threads` / `list_threads_paginated`. `get_thread` (ownership check + soft-delete filter). `create_thread`, `rename_thread`, `delete_thread` (soft). `list_messages`, `create_message`, `get_message`, `update_message`, `delete_messages_after`. `replace_assistant_message`, `count_thread_messages`, `list_messages_before`, `list_messages_paginated`.
+**`chat_service.py`** — Thread and message CRUD. `list_threads` / `list_threads_paginated`. `get_thread` (ownership check + soft-delete filter). `create_thread`, `rename_thread`, `pin_thread`, `delete_thread` (soft). `delete_all_non_pinned_threads` (soft-deletes threads, hard-deletes their messages, skips pinned, returns deleted count). `list_messages`, `create_message`, `get_message`, `update_message`, `delete_messages_after`. `create_assistant_message(db, thread_id, user_id, content, sources, input_tokens, output_tokens)`. `replace_assistant_message`. `count_thread_messages`, `list_messages_before`, `list_messages_paginated`.
 
 **`document_service.py`** — Full document pipeline. `validate_file` (magic bytes, format allow-list). `extract_text` (dispatch per format: PyMuPDF for PDF, python-docx for DOCX, openpyxl for XLSX, csv for CSV, plain read for TXT/MD/JSON). `chunk_text` (2000-char chunks, 400 overlap via `RecursiveCharacterTextSplitter`). `save_document` (stores raw bytes). `process_document` (background: extract → chunk → embed → insert chunks). `list_documents`, `list_documents_paginated`, `get_document`, `get_document_status`. `delete_document` (soft-delete document, hard-delete chunks).
 
-**`email_service.py`** — Resend API via `asyncio.to_thread`. `send_verification_email`, `send_password_reset_email`. Both use inline HTML templates with CTA buttons.
+**`email_service.py`** — Resend API via `asyncio.to_thread`. `send_verification_email`, `send_password_reset_email`. Both use inline HTML templates with CTA buttons. Links point to `FRONTEND_URL` from config.
 
 **`llm_service.py`** — `LLMProvider` Protocol (structural typing). `GeminiProvider` implements it with two `ChatGoogleGenerativeAI` clients (temperature 0.7 for chat, 0.3 for title generation). `get_llm_provider()` singleton via `@lru_cache`.
 
@@ -119,9 +141,48 @@ router_node
 
 **`websearch_node`** — Calls `AsyncTavilyClient.search(query, max_results=5)`. Returns `[{title, url, content}]`. Swallows exceptions and returns empty list on failure.
 
-**`synthesis_node`** — Builds a context block from retrieved chunks and/or web results. Prepends it as a `SystemMessage` to the full conversation history. Calls Gemini (temperature 0.7) to produce the final answer. Sets `sources` to `"llm_only"`, `"retrieval"`, `"web_search"`, or `"both"`.
+**`synthesis_node`** — Builds a context block from retrieved chunks and/or web results. Prepends it as a `SystemMessage` to the full conversation history. Calls Gemini (temperature 0.7) via `astream()` to produce the final answer. Captures `usage_metadata` from the last streaming chunk to record `input_tokens` and `output_tokens`. Sets `sources` to one of `"llm_only"`, `"retrieval"`, `"web_search"`, `"both"`.
 
-The graph is compiled once at import time (`_build_graph()`) and reused. The `db` session and `user_id` are passed via `config["configurable"]` to keep them out of serialisable state.
+### Public entrypoints in `graph.py`
+
+**`run_agent(db, user_id, messages) → tuple[str, str, int, int]`** — Invokes the graph synchronously and returns `(answer, sources, input_tokens, output_tokens)`.
+
+**`stream_agent_events(db, user_id, messages) → AsyncIterator[dict]`** — Runs the graph via `astream_events` and yields dicts for the SSE endpoint: `status` events on node start, `token` events during synthesis, and a `final` event on completion carrying `answer`, `sources`, `input_tokens`, `output_tokens`.
+
+The graph is compiled once at import time and reused across all requests. The `db` session and `user_id` are passed via `config["configurable"]` to keep them out of serialisable state.
+
+## Database Schema
+
+Six tables managed exclusively by Alembic:
+
+**`users`** — id (UUID PK), name, email (unique), hashed_password, profile_picture_data (bytea nullable), profile_picture_content_type, is_verified (bool), email_verification_token, email_verification_expires_at, reset_token, reset_token_expires_at, created_at, updated_at
+
+**`refresh_tokens`** — id (UUID PK), user_id (FK→users CASCADE), token_hash (SHA-256, unique), expires_at, revoked (bool), created_at
+
+**`chat_threads`** — id (UUID PK), user_id (FK→users), title, pinned (bool default false), created_at, updated_at, deleted_at (nullable — soft delete)
+
+**`chat_messages`** — id (UUID PK), thread_id (FK→chat_threads), user_id (FK→users), role ('user'|'assistant'), content, sources (nullable), input_tokens (int default 0), output_tokens (int default 0), created_at, edited_at (nullable)
+
+**`documents`** — id (UUID PK), user_id (FK→users), filename, file_data (bytea), content_type, status ('processing'|'ready'|'failed'), processing_error (nullable), uploaded_at, deleted_at (nullable — soft delete)
+
+**`document_chunks`** — id (UUID PK), document_id (FK→documents CASCADE), user_id (FK→users), chunk_text, embedding (vector(768)), chunk_index, created_at
+
+All user-owned tables have an indexed `user_id` column. All service-layer queries filter by `user_id`.
+
+## Alembic Migrations
+
+```
+1. 0001_initial_schema              — pgvector extension, all 5 core tables
+2. 717d7488b704                     — document processing status and error fields
+3. c7a8f9b0e1d2                     — sources field on chat_messages
+4. d8e9f0a1b2c3                     — profile picture (bytea + content_type) on users
+5. e1f2a3b4c5d6                     — refresh_tokens table
+6. f2a3b4c5d6e7                     — email verification fields; soft-delete on threads and documents
+7. g3h4i5j6k7l8                     — pinned column on chat_threads
+8. h4i5j6k7l8m9                     — input_tokens and output_tokens on chat_messages
+```
+
+`entrypoint.sh` runs `alembic upgrade head` automatically on every container start. Never call `Base.metadata.create_all()` — Alembic is the only mechanism for schema changes.
 
 ## Running Locally
 
