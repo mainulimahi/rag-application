@@ -45,9 +45,15 @@ slowapi>=0.1.9
 # Encryption (Fernet for data_sources connection_config)
 cryptography>=42.0.0
 
-# duckdb for query execution
+# duckdb for query execution + pandas for DataFrame support
 duckdb>=0.10.0
+pandas>=2.0.0
 
 # Data source connectors
 pymysql>=1.1.0
 httpx>=0.27.0
+
+#cloud storage connectors
+boto3>=1.34.0
+google-cloud-storage>=2.16.0
+azure-storage-blob>=12.19.0

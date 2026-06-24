@@ -1,10 +1,11 @@
 """Pydantic schemas for data_files endpoints (v2 data analysis)."""
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class DataFileSchemaColumn(BaseModel):
@@ -18,6 +19,14 @@ class DataFileSchemaColumn(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_validator("sample_values", mode="before")
+    @classmethod
+    def _parse_sample_values(cls, v: Any) -> list | None:
+        """Auto-parse JSON strings stored in the TEXT column back to list."""
+        if isinstance(v, str):
+            return json.loads(v) if v else None
+        return v
+
 
 class DataFileResponse(BaseModel):
     """List / upload response — never includes raw file bytes."""
@@ -29,7 +38,6 @@ class DataFileResponse(BaseModel):
     status: str
     processing_error: str | None
     row_count: int | None
-    # Populated by the service layer (len of associated schema rows)
     column_count: int
     uploaded_at: datetime
 
@@ -50,5 +58,3 @@ class DataFileStatusResponse(BaseModel):
     processing_error: str | None
     row_count: int | None
     column_count: int
-
-    model_config = {"from_attributes": True}

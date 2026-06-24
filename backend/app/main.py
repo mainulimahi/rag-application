@@ -1,6 +1,7 @@
 """FastAPI application entrypoint."""
 
 import logging
+from contextlib import asynccontextmanager
 
 import sqlalchemy as sa
 from fastapi import FastAPI, Request
@@ -11,12 +12,14 @@ from slowapi.errors import RateLimitExceeded
 from app.api.auth import router as auth_router
 from app.api.chat import messages_router as chat_messages_router
 from app.api.chat import threads_router as chat_threads_router
+from app.api.data_files import router as data_files_router
 from app.api.data_sources import router as data_sources_router
 from app.api.documents import router as documents_router
 from app.api.users import router as users_router
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.db.session import AsyncSessionLocal
+from app.services import duckdb_service
 
 # ── Structured logging ────────────────────────────────────────────────────────
 
@@ -27,12 +30,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # type: ignore[type-arg]
+    """Startup: clean up any orphaned DuckDB temp files left by a previous crash."""
+    try:
+        duckdb_service.cleanup_orphaned_temp_files()
+        logger.info("Startup: orphaned DuckDB temp files cleaned")
+    except Exception:
+        logger.exception("Startup: temp file cleanup failed (non-fatal)")
+    yield
+
+
 # ── App setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="RAG Application",
     description="Retrieval-Augmented Generation API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Rate limiter — state.limiter must be set before any request is processed.
@@ -55,6 +74,7 @@ app.include_router(chat_threads_router)
 app.include_router(chat_messages_router)
 app.include_router(documents_router)
 app.include_router(data_sources_router)
+app.include_router(data_files_router)
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
