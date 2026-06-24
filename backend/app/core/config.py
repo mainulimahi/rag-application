@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     GEMINI_LLM_MODEL: str = "gemini-2.5-flash"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
+    # Fernet encryption (for data_sources connection_config)
+    FERNET_SECRET_KEY: str
+
     # Tavily
     TAVILY_API_KEY: str
 

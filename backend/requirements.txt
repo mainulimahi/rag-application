@@ -41,3 +41,9 @@ resend>=2.0.0
 
 # Security
 slowapi>=0.1.9
+
+# Encryption (Fernet for data_sources connection_config)
+cryptography>=42.0.0
+
+# duckdb for query execution
+duckdb>=0.10.0
