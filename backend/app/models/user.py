@@ -1,12 +1,19 @@
 """SQLAlchemy ORM model for the users table."""
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    from app.models.data_source import DataSource
+    from app.models.data_file import DataFile
 
 
 class User(Base):
@@ -37,4 +44,11 @@ class User(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False
+    )
+
+    data_sources: Mapped[list[DataSource]] = relationship(
+        "DataSource", back_populates="user", cascade="all, delete-orphan"
+    )
+    data_files: Mapped[list[DataFile]] = relationship(
+        "DataFile", back_populates="user", cascade="all, delete-orphan"
     )

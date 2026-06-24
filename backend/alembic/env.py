@@ -22,6 +22,8 @@ from app.models import user  # noqa: F401 — registers User with Base.metadata 
 from app.models import chat  # noqa: F401 — registers ChatThread, ChatMessage with Base.metadata
 from app.models import document  # noqa: F401 — registers Document with Base.metadata
 from app.models import refresh_token  # noqa: F401 — registers RefreshToken with Base.metadata
+from app.models import data_source  # noqa: F401 — registers DataSource with Base.metadata
+from app.models import data_file  # noqa: F401 — registers DataFile, DataFileSchema with Base.metadata
 
 config = context.config
 
