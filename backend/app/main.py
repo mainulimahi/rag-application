@@ -11,6 +11,7 @@ from slowapi.errors import RateLimitExceeded
 from app.api.auth import router as auth_router
 from app.api.chat import messages_router as chat_messages_router
 from app.api.chat import threads_router as chat_threads_router
+from app.api.data_sources import router as data_sources_router
 from app.api.documents import router as documents_router
 from app.api.users import router as users_router
 from app.core.config import settings
@@ -53,6 +54,7 @@ app.include_router(users_router)
 app.include_router(chat_threads_router)
 app.include_router(chat_messages_router)
 app.include_router(documents_router)
+app.include_router(data_sources_router)
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────

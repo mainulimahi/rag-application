@@ -1,10 +1,11 @@
 """Pydantic schemas for data_sources endpoints (v2 data analysis)."""
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ── Per-source-type connection config models ──────────────────────────────────
 # These document expected fields; the service layer validates the incoming dict
@@ -110,6 +111,14 @@ class DataSourceWithSchema(DataSourceResponse):
     """Extends DataSourceResponse with the last-introspected schema (if available)."""
 
     schema_cache: dict[str, Any] | None = None
+
+    @field_validator("schema_cache", mode="before")
+    @classmethod
+    def _parse_schema_cache(cls, v: Any) -> dict | None:
+        """Auto-parse JSON strings stored in the TEXT column back to dict."""
+        if isinstance(v, str):
+            return json.loads(v) if v else None
+        return v
 
 
 class TestConnectionResponse(BaseModel):
