@@ -11,6 +11,7 @@ An AI-powered document Q&A and web search application. Upload PDFs, Word documen
 - **Voice input** — microphone button in the chat input uses the browser SpeechRecognition API to transcribe speech.
 - **Dark / light theme** — toggled from the Profile page; preference persisted in localStorage with no flash on load.
 - **User accounts** — signup with email verification, JWT auth (httpOnly cookies, refresh token rotation), profile with avatar, password change, token usage stats, account deletion.
+- **📊 Data analysis** — upload CSV, Excel, Parquet, TSV, or JSON files, or connect PostgreSQL, MySQL, SQLite, Amazon S3, GCS, Azure Blob, or a REST API. Ask questions in natural language; the agent generates DuckDB SQL, executes it, and renders results as an interactive paginated table with SQL transparency and CSV export. Connection credentials are Fernet-encrypted at rest and never exposed in API responses.
 - **Production Docker setup** — nginx reverse proxy, multi-stage Docker builds, automatic database migrations on startup, health checks on all services.
 
 ## Tech Stack
@@ -104,6 +105,7 @@ All configuration lives in `.env` (gitignored). Copy `.env.example` to get start
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | No | `7` | Refresh token lifetime |
 | `ENVIRONMENT` | No | `local` | `local` enables debug links and verbose SQL logging; `production` enables secure cookies |
 | `LOG_LEVEL` | No | `info` | Backend log level (`debug`, `info`, `warning`, `error`) |
+| `FERNET_SECRET_KEY` | Yes | — | 32-byte URL-safe key for encrypting data source credentials at rest. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `NEXT_PUBLIC_API_URL` | No | `` (empty) | Backend URL visible from the browser. Empty = relative URLs through nginx. Set to `http://localhost:8000` for local dev without Docker. |
 
 **Where to get API keys:**
@@ -131,10 +133,11 @@ nginx (port 80)
   │                                    │
   │                                    ├── Auth: JWT cookies, bcrypt, Resend email
   │                                    ├── LangGraph agent
-  │                                    │     ├── router_node  (LLM classifies query)
-  │                                    │     ├── retrieval_node  (pgvector search)
-  │                                    │     ├── websearch_node  (Tavily API)
-  │                                    │     └── synthesis_node  (Gemini LLM)
+  │                                    │     ├── router_node        (LLM classifies query)
+  │                                    │     ├── retrieval_node     (pgvector search)
+  │                                    │     ├── websearch_node     (Tavily API)
+  │                                    │     ├── data_analysis_node (DuckDB + LLM SQL gen)
+  │                                    │     └── synthesis_node     (Gemini LLM)
   │                                    └── PostgreSQL + pgvector
   │
   └── /  ────────────────────────► Next.js frontend (port 3000, internal)

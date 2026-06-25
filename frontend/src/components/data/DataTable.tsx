@@ -47,7 +47,8 @@ export default function DataTable({ columns, rows, truncated, row_count, total_r
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'data_results.csv'
+    const ts = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    a.download = `data_results_${ts}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }

@@ -98,8 +98,16 @@ async def select_relevant_sources(
             "reason": str(parsed.get("reason", "")),
         }
     except Exception:
-        logger.warning("data_agent: select_relevant_sources parse error — raw=%r", raw[:300])
-        return {"file_ids": [], "source_ids": [], "reason": "parse_error"}
+        logger.warning(
+            "data_agent: select_relevant_sources parse error — raw=%r, falling back to all sources",
+            raw[:300],
+        )
+        # Fall back to all available sources so the query can still run.
+        return {
+            "file_ids": [f["file_id"] for f in data_files],
+            "source_ids": [c["id"] for c in data_connections],
+            "reason": "parse_error_fallback_all",
+        }
 
 
 async def generate_duckdb_sql(
@@ -255,6 +263,7 @@ async def run_data_analysis(
 
     # Generate SQL
     sql = await generate_duckdb_sql(user_query, selected_schemas, conversation_history)
+    logger.info("Generated SQL for user %s: %s", user_id, sql[:100])
 
     # Validate SQL before execution
     valid, reason = validate_sql(sql)
@@ -281,7 +290,9 @@ async def run_data_analysis(
             data_file_obj = db_result.scalar_one_or_none()
             if data_file_obj is None:
                 logger.warning(
-                    "data_agent: file_id %s not found or not owned by user %s", file_id, user_id
+                    "data_agent: file_id %s not found or not owned by user %s — skipping",
+                    file_id,
+                    user_id,
                 )
                 continue
 
@@ -290,7 +301,9 @@ async def run_data_analysis(
 
             query_result = await loop.run_in_executor(
                 None,
-                lambda fb=file_bytes, fn=filename: duckdb_service.query_file(fb, fn, sql),
+                lambda fb=file_bytes, fn=filename: duckdb_service.query_file(
+                    fb, fn, sql, user_id=user_id
+                ),
             )
 
             if not all_columns:
@@ -298,6 +311,14 @@ async def run_data_analysis(
                 all_rows = list(query_result["rows"])
             elif query_result["columns"] == all_columns:
                 all_rows.extend(query_result["rows"])
+            else:
+                # Column mismatch — keep primary result; log and note for synthesis.
+                logger.warning(
+                    "data_agent: column mismatch for file_id=%s (%s vs %s) — skipping merge",
+                    file_id,
+                    query_result["columns"],
+                    all_columns,
+                )
 
             total_rows_before_truncation += query_result["total_row_count"]
             if query_result["truncated"]:
@@ -314,10 +335,13 @@ async def run_data_analysis(
             ds = await data_source_service.get_data_source(db, user_id, UUID(source_id))
             config = data_source_service.get_decrypted_config(ds)
             source_type = ds.source_type
+            source_name = ds.name
 
             query_result = await loop.run_in_executor(
                 None,
-                lambda cfg=config, st=source_type: duckdb_service.query_data_source(cfg, st, sql),
+                lambda cfg=config, st=source_type, sn=source_name: duckdb_service.query_data_source(
+                    cfg, st, sql, source_name=sn, user_id=user_id
+                ),
             )
 
             if not all_columns:
@@ -325,12 +349,19 @@ async def run_data_analysis(
                 all_rows = list(query_result["rows"])
             elif query_result["columns"] == all_columns:
                 all_rows.extend(query_result["rows"])
+            else:
+                logger.warning(
+                    "data_agent: column mismatch for source_id=%s (%s vs %s) — skipping merge",
+                    source_id,
+                    query_result["columns"],
+                    all_columns,
+                )
 
             total_rows_before_truncation += query_result["total_row_count"]
             if query_result["truncated"]:
                 any_truncated = True
             all_summary_stats.update(query_result["summary_stats"])
-            sources_used.append({"name": ds.name, "type": source_type})
+            sources_used.append({"name": source_name, "type": source_type})
 
         except Exception as exc:
             logger.error(
@@ -340,7 +371,7 @@ async def run_data_analysis(
 
     row_count = len(all_rows)
     logger.info(
-        "Data analysis for user %s: %d rows from %s",
+        "Data analysis complete — user %s: %d rows, sources: %s",
         user_id,
         row_count,
         [s["name"] for s in sources_used],

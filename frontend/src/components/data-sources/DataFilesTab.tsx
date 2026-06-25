@@ -213,6 +213,9 @@ export default function DataFilesTab() {
                     {formatBytes(file.file_size)} · {formatDate(file.uploaded_at)}
                     {file.status === 'ready' && ` · ${file.row_count?.toLocaleString() ?? 0} rows · ${file.column_count} cols`}
                   </span>
+                  {file.status === 'failed' && file.processing_error && (
+                    <span className="ds-file-error">{file.processing_error}</span>
+                  )}
                 </div>
 
                 <StatusBadge status={file.status} error={file.processing_error} />
@@ -283,7 +286,7 @@ function StatusBadge({ status, error }: { status: string; error: string | null }
     return <span className="ds-status-badge ready">Ready</span>
   }
   return (
-    <span className="ds-status-badge failed" title={error ?? undefined}>Failed</span>
+    <span className="ds-status-badge failed">Failed</span>
   )
 }
 

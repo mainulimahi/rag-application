@@ -20,6 +20,8 @@ export default function SqlDisplay({ sql }: Props) {
     }
   }
 
+  const lines = sql.split('\n')
+
   return (
     <div className="sql-display">
       <button className="sql-display-toggle" onClick={() => setOpen((o) => !o)}>
@@ -30,7 +32,14 @@ export default function SqlDisplay({ sql }: Props) {
           <button className="sql-display-copy" onClick={handleCopy}>
             {copied ? '✓ Copied' : '⎘ Copy'}
           </button>
-          <pre className="sql-display-pre">{sql}</pre>
+          <div className="sql-display-pre">
+            <div className="sql-line-numbers" aria-hidden="true">
+              {lines.map((_, i) => (
+                <span key={i}>{i + 1}</span>
+              ))}
+            </div>
+            <pre className="sql-code">{sql}</pre>
+          </div>
         </div>
       )}
     </div>

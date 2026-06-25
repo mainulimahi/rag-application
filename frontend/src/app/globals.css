@@ -2075,6 +2075,17 @@ a:hover {
   transition: background 0.2s, border-color 0.2s;
 }
 
+.ds-file-error {
+  font-size: 0.75rem;
+  color: #dc2626;
+  margin-top: 0.2rem;
+  line-height: 1.4;
+}
+
+:root[data-theme="dark"] .ds-file-error {
+  color: #f87171;
+}
+
 .ds-schema-loading {
   font-size: 0.875rem;
   color: var(--color-text-muted);
@@ -2675,17 +2686,39 @@ a:hover {
 }
 
 .sql-display-pre {
-  padding: 0.875rem 1rem;
-  padding-top: 2.25rem;
+  display: flex;
   max-height: 200px;
   overflow-y: auto;
+  margin-top: 2rem;
   font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
   font-size: 0.8125rem;
   line-height: 1.6;
+}
+
+.sql-line-numbers {
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 0.5rem 0.75rem 0.75rem;
+  min-width: 2.25rem;
+  text-align: right;
+  color: #475569;
+  user-select: none;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(255,255,255,0.07);
+}
+
+.sql-line-numbers span {
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.sql-code {
+  padding: 0.75rem 1rem;
   color: #e2e8f0;
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+  flex: 1;
 }
 
 .sql-display-copy {

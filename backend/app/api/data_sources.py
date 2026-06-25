@@ -27,11 +27,18 @@ from app.schemas.data_source import (
     DataSourceUpdate,
     DataSourceWithSchema,
     TestConnectionResponse,
+    _SENSITIVE_FIELDS,
 )
 from app.services import data_source_service
 
 router = APIRouter(prefix="/api/data-sources", tags=["data-sources"])
 logger = logging.getLogger(__name__)
+
+
+def _assert_no_credentials(response_dict: dict) -> None:
+    """Raise AssertionError if any sensitive credential key leaks into a response dict."""
+    leaked = _SENSITIVE_FIELDS.intersection(response_dict.keys())
+    assert not leaked, f"Credential key(s) leaked into API response: {leaked}"
 
 
 @router.get(
@@ -45,7 +52,10 @@ async def list_data_sources(
 ) -> list[DataSourceResponse]:
     """Return all data sources for the authenticated user, newest first. Credentials are never included."""
     sources = await data_source_service.list_data_sources(db, current_user.id)
-    return [DataSourceResponse.model_validate(ds) for ds in sources]
+    responses = [DataSourceResponse.model_validate(ds) for ds in sources]
+    for r in responses:
+        _assert_no_credentials(r.model_dump())
+    return responses
 
 
 @router.post(
@@ -94,7 +104,9 @@ async def get_data_source(
 ) -> DataSourceWithSchema:
     """Return one data source including its last-introspected schema. Credentials are never included."""
     ds = await data_source_service.get_data_source(db, current_user.id, source_id)
-    return DataSourceWithSchema.model_validate(ds)
+    response = DataSourceWithSchema.model_validate(ds)
+    _assert_no_credentials(response.model_dump())
+    return response
 
 
 @router.patch(

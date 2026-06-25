@@ -227,7 +227,7 @@ def extract_schema(file_bytes: bytes, filename: str) -> dict:
 # ── File query ─────────────────────────────────────────────────────────────────
 
 
-def query_file(file_bytes: bytes, filename: str, sql: str) -> dict:
+def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = None) -> dict:
     """
     Execute user SQL against an uploaded file.
 
@@ -259,13 +259,24 @@ def query_file(file_bytes: bytes, filename: str, sql: str) -> dict:
     finally:
         _cleanup_temp_file(path)
 
-    return _wrap_dataframe(df)
+    result = _wrap_dataframe(df)
+    logger.info(
+        "DuckDB query executed — user_id=%s, source='%s', rows=%d, truncated=%s, sql_preview='%s...'",
+        user_id,
+        filename,
+        result["row_count"],
+        result["truncated"],
+        sql[:80],
+    )
+    return result
 
 
 # ── Data source query ──────────────────────────────────────────────────────────
 
 
-def query_data_source(config: dict, source_type: str, sql: str) -> dict:
+def query_data_source(
+    config: dict, source_type: str, sql: str, source_name: str = "", user_id: object = None
+) -> dict:
     """
     Execute user SQL against an external data source.
 
@@ -282,7 +293,17 @@ def query_data_source(config: dict, source_type: str, sql: str) -> dict:
     if source_type not in dispatch:
         raise ValueError(f"query_data_source does not support source_type '{source_type}'")
     df = dispatch[source_type](config, sql)
-    return _wrap_dataframe(df)
+    result = _wrap_dataframe(df)
+    logger.info(
+        "DuckDB query executed — user_id=%s, source='%s' (%s), rows=%d, truncated=%s, sql_preview='%s...'",
+        user_id,
+        source_name,
+        source_type,
+        result["row_count"],
+        result["truncated"],
+        sql[:80],
+    )
+    return result
 
 
 def _query_postgresql(config: dict, sql: str) -> pd.DataFrame:
