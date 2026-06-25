@@ -6,15 +6,15 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import jwt as _jwt
 import sqlalchemy as sa
-from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.refresh_token import RefreshToken
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
 
 def hash_password(password: str) -> str:
@@ -31,14 +31,14 @@ def create_access_token(subject: str) -> str:
     """Create a short-lived JWT access token for the given subject (user ID string)."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": subject, "exp": expire, "type": "access"}
-    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return _jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def create_refresh_token(subject: str) -> str:
     """Create a long-lived JWT refresh token for the given subject (user ID string)."""
     expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     payload = {"sub": subject, "exp": expire, "type": "refresh"}
-    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return _jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_token(token: str, expected_type: str) -> str:
@@ -56,8 +56,8 @@ def decode_token(token: str, expected_type: str) -> str:
         ValueError: If the token is invalid, expired, or the wrong type.
     """
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-    except JWTError as exc:
+        payload = _jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except _jwt.InvalidTokenError as exc:
         raise ValueError(f"Invalid token: {exc}") from exc
 
     if payload.get("type") != expected_type:
@@ -131,6 +131,22 @@ async def revoke_refresh_token(db: AsyncSession, token: str) -> None:
     await db.execute(
         sa.update(RefreshToken)
         .where(RefreshToken.token_hash == _hash_token(token))
+        .values(revoked=True)
+    )
+    await db.commit()
+
+
+async def revoke_all_user_tokens(db: AsyncSession, user_id: UUID) -> None:
+    """
+    Revoke all active refresh tokens for a user.
+
+    Called after a successful password reset so any sessions that existed
+    before the reset (including an attacker's compromised session) are
+    immediately invalidated.
+    """
+    await db.execute(
+        sa.update(RefreshToken)
+        .where(RefreshToken.user_id == user_id, RefreshToken.revoked == sa.false())
         .values(revoked=True)
     )
     await db.commit()

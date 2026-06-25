@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.limiter import limiter
+from app.core.limiter import get_user_id_key, limiter
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
@@ -162,7 +162,7 @@ async def delete_data_source(
     response_model=TestConnectionResponse,
     summary="Test a data source connection",
 )
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=get_user_id_key)
 async def test_connection(
     source_id: UUID,
     request: Request,

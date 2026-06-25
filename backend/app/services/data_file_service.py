@@ -10,11 +10,16 @@ Upload flow:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+import re
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
+
+import filetype
 
 import sqlalchemy as sa
 from fastapi import HTTPException, status
@@ -28,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = duckdb_service.SUPPORTED_EXTENSIONS
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+
+
+# ── Filename sanitization ──────────────────────────────────────────────────────
+
+
+def sanitize_filename(filename: str) -> str:
+    """Strip path separators, null bytes, and control characters from a filename."""
+    name = re.sub(r"[^\w\-_\. ]", "_", Path(filename).name.strip())
+    return name[:255] or "upload"
 
 
 # ── Validation ─────────────────────────────────────────────────────────────────
@@ -50,6 +64,57 @@ def validate_data_file(filename: str, file_size: int) -> None:
         )
 
 
+_PARQUET_MAGIC = b"PAR1"
+
+_EXCEL_MIMES = {
+    "application/zip",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def validate_data_file_content(filename: str, file_bytes: bytes) -> None:
+    """Raise 422 if file magic bytes don't match the declared extension."""
+    ext = Path(filename).suffix.lower()
+
+    if ext == ".parquet":
+        if not file_bytes[:4] == _PARQUET_MAGIC:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="File content does not match the declared file type (expected Parquet)",
+            )
+    elif ext in (".xlsx", ".xls"):
+        kind = filetype.guess(file_bytes)
+        if kind is None or kind.mime not in _EXCEL_MIMES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="File content does not match the declared file type (expected Excel)",
+            )
+        # Zip bomb protection for Excel files (ZIP-based).
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+                total_uncompressed = sum(info.file_size for info in zf.infolist())
+                if total_uncompressed > 100 * 1024 * 1024:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "File appears to be a zip bomb or is excessively large when "
+                            "decompressed. Maximum uncompressed size is 100 MB."
+                        ),
+                    )
+        except zipfile.BadZipFile:
+            pass
+    elif ext == ".json":
+        try:
+            json.loads(file_bytes[:1024].decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="File content does not match the declared file type (expected JSON)",
+            )
+    # CSV and TSV have no magic bytes — extension match is sufficient
+
+
 # ── Upload ─────────────────────────────────────────────────────────────────────
 
 
@@ -68,10 +133,12 @@ async def upload_data_file(
     background after the response is sent.
     """
     validate_data_file(filename, len(file_bytes))
+    validate_data_file_content(filename, file_bytes)
+    safe_filename = sanitize_filename(filename)
 
     data_file = DataFile(
         user_id=user_id,
-        filename=filename,
+        filename=safe_filename,
         file_data=file_bytes,
         file_size=len(file_bytes),
         content_type=content_type,
@@ -86,7 +153,7 @@ async def upload_data_file(
         data_file_id=data_file.id,
         user_id=user_id,
         file_bytes=file_bytes,
-        filename=filename,
+        filename=safe_filename,
     )
     return data_file
 

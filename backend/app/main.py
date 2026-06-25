@@ -59,13 +59,13 @@ app.state.limiter = limiter
 
 # Browser → backend direct calls with credentials: 'include'.
 # allow_credentials=True is required for cookies (httpOnly auth cookies) to be sent and received.
-# Wildcard origins ("*") are incompatible with allow_credentials, so the origin is explicit.
+# Wildcard origins ("*") are incompatible with allow_credentials, so origins come from settings.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Cookie"],
 )
 
 app.include_router(auth_router)
@@ -88,6 +88,16 @@ async def add_security_headers(request: Request, call_next):  # type: ignore[typ
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
+    if settings.ENVIRONMENT == "production":
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self'; "
+            "font-src 'self'"
+        )
     return response
 
 
@@ -104,13 +114,20 @@ async def log_requests(request: Request, call_next):  # type: ignore[type-arg]
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-    """Return a structured 429 response instead of slowapi's plain-text default."""
+    """Return a structured 429 response with Retry-After header."""
+    retry_after = 60
+    try:
+        # SlowAPI exposes the limit's reset window via exc.limit.get_expiry()
+        retry_after = int(exc.limit.get_expiry())  # type: ignore[attr-defined]
+    except Exception:
+        pass
     return JSONResponse(
         status_code=429,
         content={
-            "detail": "Too many requests. Please slow down and try again shortly.",
+            "detail": f"Rate limit exceeded. Try again in {retry_after} seconds.",
             "type": "rate_limit_exceeded",
         },
+        headers={"Retry-After": str(retry_after)},
     )
 
 

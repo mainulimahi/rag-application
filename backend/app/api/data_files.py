@@ -14,7 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.limiter import limiter
+from app.core.limiter import get_user_id_key, limiter
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
@@ -47,7 +47,7 @@ def _build_with_schema(data_file) -> DataFileWithSchema:
     status_code=status.HTTP_201_CREATED,
     summary="Upload a data file for analysis",
 )
-@limiter.limit("20/minute")
+@limiter.limit("20/minute", key_func=get_user_id_key)
 async def upload_data_file(
     request: Request,
     file: UploadFile,

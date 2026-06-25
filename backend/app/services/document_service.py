@@ -27,7 +27,10 @@ import csv
 import io
 import json
 import logging
+import re
+import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 import filetype
@@ -81,6 +84,15 @@ _EMBED_BATCH_SIZE = 20
 
 # Warn when extraction yields fewer than this many characters — likely a problem.
 _SPARSE_TEXT_THRESHOLD = 100
+
+
+# ── Filename sanitization ──────────────────────────────────────────────────────
+
+
+def sanitize_filename(filename: str) -> str:
+    """Strip path separators, null bytes, and control characters from a filename."""
+    name = re.sub(r"[^\w\-_\. ]", "_", Path(filename).name.strip())
+    return name[:255] or "upload"
 
 
 # ── Validation ─────────────────────────────────────────────────────────────────
@@ -138,6 +150,19 @@ def validate_file(filename: str, content_type: str, file_size: int, file_data: b
                 f"File content does not match the '{ext}' format (detected: {detected}). "
                 "Ensure you are uploading the correct file type."
             )
+
+    # Zip bomb protection for ZIP-based Office formats.
+    if file_data is not None and ext in (".docx", ".xlsx"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
+                total_uncompressed = sum(info.file_size for info in zf.infolist())
+                if total_uncompressed > 100 * 1024 * 1024:
+                    raise ValueError(
+                        "File appears to be a zip bomb or is excessively large when decompressed. "
+                        "Maximum uncompressed size is 100 MB."
+                    )
+        except zipfile.BadZipFile:
+            pass
 
 
 # ── Text extraction ────────────────────────────────────────────────────────────
@@ -337,7 +362,7 @@ async def save_document(
     """
     doc = Document(
         user_id=user_id,
-        filename=filename,
+        filename=sanitize_filename(filename),
         content_type=content_type,
         file_data=file_data,
     )

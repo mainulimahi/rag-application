@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
+import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage } from '@/lib/types'
 import DataTable from '@/components/data/DataTable'
@@ -199,7 +200,7 @@ export default function ChatMessages({
                 <div className="chat-bubble assistant-bubble">
                   {isStreaming && msg.content ? (
                     <div className="md-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={mdComponents}>
                         {msg.content}
                       </ReactMarkdown>
                       <span className="streaming-cursor" aria-hidden="true" />
@@ -256,7 +257,7 @@ export default function ChatMessages({
                   <div className={`chat-bubble${msg.role === 'assistant' ? ' assistant-bubble' : ''}`}>
                     {msg.role === 'assistant' ? (
                       <div className="md-body">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={mdComponents}>
                           {msg.content}
                         </ReactMarkdown>
                       </div>

@@ -1,10 +1,11 @@
 """User API routes: profile retrieval, name update, avatar management, and password change."""
 
 import filetype
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.limiter import get_user_id_key, limiter
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
@@ -115,7 +116,9 @@ async def change_password(
     response_model=UserResponse,
     summary="Upload a profile picture",
 )
+@limiter.limit("10/minute", key_func=get_user_id_key)
 async def upload_avatar(
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -183,7 +186,9 @@ async def delete_me(
     response_model=UserStatsResponse,
     summary="Get aggregate stats for the current user",
 )
+@limiter.limit("30/minute", key_func=get_user_id_key)
 async def get_stats(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> UserStatsResponse:

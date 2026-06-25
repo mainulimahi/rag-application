@@ -12,12 +12,13 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import run_agent
 from app.agents.graph import stream_agent_events
+from app.core.limiter import get_user_id_key, limiter
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
@@ -216,8 +217,10 @@ async def list_thread_messages(
     status_code=status.HTTP_201_CREATED,
     summary="Send a message and receive the assistant reply",
 )
+@limiter.limit("60/minute", key_func=get_user_id_key)
 async def create_thread_message(
     thread_id: UUID,
+    request: Request,
     body: MessageCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -273,8 +276,10 @@ async def create_thread_message(
     "/{thread_id}/messages/stream",
     summary="Send a message and receive an SSE streaming response",
 )
+@limiter.limit("60/minute", key_func=get_user_id_key)
 async def create_thread_message_stream(
     thread_id: UUID,
+    request: Request,
     body: MessageCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),

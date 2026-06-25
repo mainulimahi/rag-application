@@ -12,7 +12,6 @@ import io
 import json
 import logging
 import math
-import os
 import re
 import threading
 from datetime import datetime, timedelta, timezone
@@ -42,8 +41,12 @@ def _ensure_temp_dir() -> None:
 def _write_temp_file(file_bytes: bytes, filename: str) -> Path:
     """Write bytes to a UUID-prefixed temp file; return its Path."""
     _ensure_temp_dir()
-    safe_name = re.sub(r"[^\w.\-]", "_", os.path.basename(filename)) or "upload"
+    safe_name = re.sub(r"[^\w.\-]", "_", Path(filename).name) or "upload"
+    if ".." in safe_name:
+        raise ValueError("Invalid filename")
     temp_path = TEMP_DIR / f"{uuid4().hex}_{safe_name}"
+    if not str(temp_path).startswith(str(TEMP_DIR)):
+        raise ValueError("Invalid file path")
     temp_path.write_bytes(file_bytes)
     temp_path.chmod(0o600)
     return temp_path

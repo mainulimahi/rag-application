@@ -38,6 +38,15 @@ class MySQLConfig(BaseModel):
 class SQLiteConfig(BaseModel):
     file_path: str
 
+    @field_validator("file_path")
+    @classmethod
+    def _validate_file_path(cls, v: str) -> str:
+        if ".." in v:
+            raise ValueError("file_path must not contain '..'")
+        if not v.startswith("/"):
+            raise ValueError("file_path must be an absolute path starting with '/'")
+        return v
+
 
 class S3Config(BaseModel):
     bucket: str

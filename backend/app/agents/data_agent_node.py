@@ -26,13 +26,15 @@ logger = logging.getLogger(__name__)
 
 _FORBIDDEN_KEYWORDS = [
     "drop", "delete", "update", "insert", "create", "alter",
-    "truncate", "execute", "copy", "pg_", "information_schema",
-    "pg_catalog", "--", "/*",
+    "truncate", "exec", "execute", "copy", "union",
+    "xp_", "sp_", "pg_", "information_schema", "pg_catalog",
+    "--", "/*",
 ]
 
 # These keywords are matched using word boundaries to avoid false positives.
 _WORD_BOUNDARY_KEYWORDS = frozenset(
-    {"drop", "delete", "update", "insert", "create", "alter", "truncate", "execute", "copy"}
+    {"drop", "delete", "update", "insert", "create", "alter",
+     "truncate", "exec", "execute", "copy", "union"}
 )
 
 
@@ -177,6 +179,9 @@ def validate_sql(sql: str) -> tuple[bool, str]:
         else:
             if keyword in sql_lower:
                 return False, f"SQL contains forbidden operation: '{keyword}'"
+
+    if re.search(r";\s*(select|insert|update|delete|drop|create)", sql_lower):
+        return False, "SQL contains multiple statements"
 
     return True, ""
 

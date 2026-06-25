@@ -52,8 +52,9 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
 
 def _clear_auth_cookies(response: Response) -> None:
     """Expire both auth cookies (used on logout and failed refresh)."""
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    secure = settings.ENVIRONMENT == "production"
+    response.delete_cookie("access_token", path="/", httponly=True, samesite="lax", secure=secure)
+    response.delete_cookie("refresh_token", path="/", httponly=True, samesite="lax", secure=secure)
 
 
 @router.post(
@@ -116,7 +117,9 @@ async def signup(
     response_model=MessageResponse,
     summary="Verify email address using the token from the verification email",
 )
+@limiter.limit("10/minute")
 async def verify_email(
+    request: Request,
     token: str,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
@@ -377,6 +380,7 @@ async def reset_password(
 
     hashed = auth_service.hash_password(body.new_password)
     await user_service.update_user_password(db, user, hashed_password=hashed)
+    await auth_service.revoke_all_user_tokens(db, user.id)
     logger.info("Password reset for user: %s", user.email)
 
     return MessageResponse(message="Password reset successfully. You can now log in.")

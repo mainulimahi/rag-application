@@ -1,7 +1,9 @@
 """Application configuration — all settings loaded from environment variables via pydantic-settings."""
 
+import base64
 from urllib.parse import quote_plus
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +22,11 @@ class Settings(BaseSettings):
     POSTGRES_DB: str
     POSTGRES_HOST: str
     POSTGRES_PORT: int = 5432
+
+    # CORS — origins allowed to make credentialed cross-origin requests.
+    # Set as a JSON array in .env: ALLOWED_ORIGINS=["https://yourdomain.com"]
+    # Defaults cover local Docker (port 80) and local Next.js dev server (port 3000).
+    ALLOWED_ORIGINS: list[str] = ["http://localhost", "http://localhost:3000"]
 
     # Gemini — single API key covers both LLM and embedding endpoints
     GEMINI_API_KEY: str
@@ -42,6 +49,35 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    @field_validator("FERNET_SECRET_KEY")
+    @classmethod
+    def validate_fernet_key(cls, v: str) -> str:
+        """Validate that FERNET_SECRET_KEY is a proper 32-byte URL-safe base64 key."""
+        try:
+            key_bytes = base64.urlsafe_b64decode(v)
+        except Exception as exc:
+            raise ValueError(
+                "FERNET_SECRET_KEY is not valid URL-safe base64. "
+                "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            ) from exc
+        if len(key_bytes) != 32:
+            raise ValueError(
+                f"FERNET_SECRET_KEY must decode to exactly 32 bytes, got {len(key_bytes)}. "
+                "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            )
+        return v
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def validate_jwt_secret(cls, v: str) -> str:
+        """Validate that JWT_SECRET_KEY is at least 32 characters."""
+        if len(v) < 32:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be at least 32 characters, got {len(v)}. "
+                "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        return v
 
     # App
     ENVIRONMENT: str = "local"
