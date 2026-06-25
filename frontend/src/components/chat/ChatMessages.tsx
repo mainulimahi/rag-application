@@ -1,9 +1,13 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage } from '@/lib/types'
+import DataTable from '@/components/data/DataTable'
+import SqlDisplay from '@/components/data/SqlDisplay'
+import SummaryStats from '@/components/data/SummaryStats'
 
 export type DisplayMessage = ChatMessage & {
   isPending?: boolean
@@ -268,6 +272,42 @@ export default function ChatMessages({
                     {msg.sources === 'retrieval' && '📄 From your documents'}
                     {msg.sources === 'web_search' && '🌐 Web search'}
                     {msg.sources === 'both' && '📄🌐 Documents + Web'}
+                    {msg.sources === 'data_analysis' && '📊 Data Analysis'}
+                  </div>
+                )}
+
+                {/* Data analysis results */}
+                {msg.role === 'assistant' && !isRegenerating && msg.data_analysis && (
+                  <div className="data-analysis-block">
+                    {!msg.data_analysis.error ? (
+                      <>
+                        <SummaryStats
+                          summary_stats={msg.data_analysis.summary_stats}
+                          sources_used={msg.data_analysis.sources_used}
+                          row_count={msg.data_analysis.row_count}
+                        />
+                        <SqlDisplay sql={msg.data_analysis.sql} />
+                        <DataTable
+                          columns={msg.data_analysis.columns}
+                          rows={msg.data_analysis.rows}
+                          truncated={msg.data_analysis.truncated}
+                          row_count={msg.data_analysis.row_count}
+                          total_row_count={msg.data_analysis.total_row_count}
+                        />
+                      </>
+                    ) : msg.data_analysis.error === 'no_sources' ? (
+                      <div className="data-source-suggestion">
+                        <span>📊 No data sources connected.</span>
+                        <div className="data-source-suggestion-links">
+                          <Link href="/data-sources" className="data-source-suggestion-btn">
+                            Upload a file →
+                          </Link>
+                          <Link href="/data-sources" className="data-source-suggestion-btn">
+                            Add a connection →
+                          </Link>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
 

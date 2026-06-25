@@ -30,6 +30,19 @@ export interface ChatThread {
   updated_at: string
 }
 
+export interface DataAnalysisResult {
+  sql: string
+  columns: string[]
+  rows: unknown[][]
+  row_count: number
+  total_row_count: number
+  truncated: boolean
+  summary_stats: Record<string, Record<string, unknown>>
+  sources_used: Array<{ name: string; type: string }>
+  error?: string
+  message?: string
+}
+
 export interface ChatMessage {
   id: string
   thread_id: string
@@ -38,7 +51,8 @@ export interface ChatMessage {
   content: string
   created_at: string
   edited_at: string | null
-  sources: 'llm_only' | 'retrieval' | 'web_search' | 'both' | null
+  sources: 'llm_only' | 'retrieval' | 'web_search' | 'both' | 'data_analysis' | null
+  data_analysis?: DataAnalysisResult | null
 }
 
 export interface MessagePairResponse {
@@ -159,5 +173,5 @@ export interface DataFileStatus {
 export type StreamEvent =
   | { type: 'status'; content: string }
   | { type: 'token'; content: string }
-  | { type: 'done'; user_message: ChatMessage; assistant_message: ChatMessage; thread: ChatThread | null }
+  | { type: 'done'; user_message: ChatMessage; assistant_message: ChatMessage; thread: ChatThread | null; data_analysis?: DataAnalysisResult | null }
   | { type: 'error'; content: string }
