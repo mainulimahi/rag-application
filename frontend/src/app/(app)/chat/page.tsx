@@ -8,6 +8,7 @@ import type { DisplayMessage } from '@/components/chat/ChatMessages'
 import ChatSidebar from '@/components/chat/ChatSidebar'
 import ChatMessages from '@/components/chat/ChatMessages'
 import ChatInput from '@/components/chat/ChatInput'
+import RateLimitBanner from '@/components/chat/RateLimitBanner'
 import { showToast, ToastContainer } from '@/components/Toast'
 
 const PENDING_USER_ID = '__pending_user__'
@@ -38,6 +39,11 @@ export default function ChatPage() {
   const [streamingStatus, setStreamingStatus] = useState('')
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [providerError, setProviderError] = useState<{
+    error_type: 'rate_limit' | 'provider_error'
+    provider?: string
+    message: string
+  } | null>(null)
 
   const initDone = useRef(false)
 
@@ -210,6 +216,7 @@ export default function ChatPage() {
 
   async function handleSendMessage(content: string) {
     if (isGenerating) return
+    setProviderError(null)
 
     // If no thread exists yet, create one now (first message in pending chat)
     let threadId = selectedThreadId
@@ -283,6 +290,15 @@ export default function ChatPage() {
             )
           }
         } else if (event.type === 'error') {
+          if (event.error_type === 'rate_limit' || event.error_type === 'provider_error') {
+            setProviderError({
+              error_type: event.error_type,
+              provider: event.provider,
+              message: event.content,
+            })
+            setMessages((prev) => prev.filter((m) => !m.isPending))
+            break
+          }
           throw new Error(event.content)
         }
       }
@@ -418,6 +434,15 @@ export default function ChatPage() {
             {hasPendingChat && !selectedThreadId ? 'New Chat' : selectedThread?.title ?? 'Loading…'}
           </span>
         </div>
+
+        {providerError && (
+          <RateLimitBanner
+            error_type={providerError.error_type}
+            provider={providerError.provider}
+            message={providerError.message}
+            onDismiss={() => setProviderError(null)}
+          />
+        )}
 
         <ChatMessages
           messages={messages}

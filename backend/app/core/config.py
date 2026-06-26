@@ -28,10 +28,20 @@ class Settings(BaseSettings):
     # Defaults cover local Docker (port 80) and local Next.js dev server (port 3000).
     ALLOWED_ORIGINS: list[str] = ["http://localhost", "http://localhost:3000"]
 
+    # LLM provider selection — "gemini" or "cloudflare"
+    LLM_PROVIDER: str = "gemini"
+
     # Gemini — single API key covers both LLM and embedding endpoints
     GEMINI_API_KEY: str
     GEMINI_LLM_MODEL: str = "gemini-2.5-flash"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+
+    # Cloudflare Workers AI (alternative LLM provider)
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    CLOUDFLARE_API_TOKEN: str = ""
+    CLOUDFLARE_MODEL: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    CLOUDFLARE_SQL_MODEL: str = "@cf/qwen/qwen2.5-coder-32b-instruct"
+    CLOUDFLARE_ROUTER_MODEL: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
     # Fernet encryption (for data_sources connection_config)
     FERNET_SECRET_KEY: str

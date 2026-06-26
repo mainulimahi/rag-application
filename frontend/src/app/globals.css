@@ -29,6 +29,13 @@
   --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.06);
   --shadow-card-hover: 0 4px 12px 0 rgb(0 0 0 / 0.1);
   --transition-theme: background 0.2s, color 0.2s, border-color 0.2s;
+  --warning-bg: #fffbeb;
+  --warning-border: #f59e0b;
+  --warning-text: #92400e;
+  --warning-title: #78350f;
+  --error-bg: #fef2f2;
+  --error-border: #fca5a5;
+  --error-text: #dc2626;
 }
 
 /* ── Dark theme ────────────────────────────────────────────────────────────── */
@@ -49,6 +56,13 @@
   --color-code-bg: #1e2432;
   --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.3);
   --shadow-card-hover: 0 4px 12px 0 rgb(0 0 0 / 0.4);
+  --warning-bg: #1c1a0a;
+  --warning-border: #d97706;
+  --warning-text: #fcd34d;
+  --warning-title: #fde68a;
+  --error-bg: #2a1515;
+  --error-border: #7f1d1d;
+  --error-text: #f87171;
 }
 
 /* ── Base ──────────────────────────────────────────────────────────────────── */
@@ -1151,6 +1165,120 @@ a:hover {
   line-height: 1;
   padding: 0 0.25rem;
   flex-shrink: 0;
+}
+
+/* ── Rate limit / provider error banners ──────────────────────────────────── */
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.rate-limit-banner,
+.provider-error-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  animation: slideDown 0.3s ease-out;
+}
+
+.rate-limit-banner {
+  background: var(--warning-bg);
+  border-left: 4px solid var(--warning-border);
+  color: var(--warning-text);
+}
+
+.provider-error-banner {
+  background: var(--error-bg);
+  border-left: 4px solid var(--error-border);
+  color: var(--error-text);
+}
+
+.rate-limit-banner-icon {
+  font-size: 1.125rem;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.rate-limit-banner-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.rate-limit-banner-title {
+  font-weight: 700;
+  font-size: 0.9375rem;
+}
+
+.rate-limit-banner-subtitle {
+  font-size: 0.875rem;
+  opacity: 0.9;
+}
+
+.rate-limit-expand-btn {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: inherit;
+  padding: 0;
+  opacity: 0.85;
+  transition: opacity 0.12s;
+}
+
+.rate-limit-expand-btn:hover {
+  opacity: 1;
+}
+
+.rate-limit-expand {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.3s ease;
+}
+
+.rate-limit-expand.open {
+  max-height: 200px;
+}
+
+.rate-limit-expand-box {
+  margin-top: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.06);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.rate-limit-expand-box ul {
+  padding-left: 1.25rem;
+  margin-top: 0.25rem;
+}
+
+.rate-limit-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.7;
+  padding: 0.125rem 0.25rem;
+  border-radius: 4px;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.rate-limit-dismiss:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.08);
 }
 
 /* ── Mobile sidebar overlay ────────────────────────────────────────────────── */

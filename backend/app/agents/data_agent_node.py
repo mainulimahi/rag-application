@@ -15,12 +15,12 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.exceptions import LLMProviderError, RateLimitError
 from app.models.data_file import DataFile
 from app.services import data_file_service, data_source_service, duckdb_service
+from app.services.llm_factory import get_llm, get_sql_llm
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +80,13 @@ async def select_relevant_sources(
         "Do not include any text outside the JSON."
     )
 
-    llm = ChatGoogleGenerativeAI(
-        model=settings.GEMINI_LLM_MODEL,
-        google_api_key=settings.GEMINI_API_KEY,
-        temperature=0,
-    )
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    llm = get_llm(temperature=0.0, purpose="general")
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+    except (RateLimitError, LLMProviderError):
+        raise
+    except Exception as exc:
+        raise LLMProviderError("LLM", str(exc)[:200]) from exc
     raw = str(response.content).strip()
 
     # Strip markdown fences if the model wraps the JSON
@@ -152,12 +153,13 @@ async def generate_duckdb_sql(
         "Return ONLY the SQL query, no explanation, no markdown code blocks."
     )
 
-    llm = ChatGoogleGenerativeAI(
-        model=settings.GEMINI_LLM_MODEL,
-        google_api_key=settings.GEMINI_API_KEY,
-        temperature=0,
-    )
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    llm = get_sql_llm()
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+    except (RateLimitError, LLMProviderError):
+        raise
+    except Exception as exc:
+        raise LLMProviderError("LLM", str(exc)[:200]) from exc
     sql = str(response.content).strip()
 
     # Strip markdown fences

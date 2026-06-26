@@ -6,18 +6,20 @@ so they never appear in serialisable state.
 """
 
 import logging
+import re
 from typing import Any
 from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_google_genai import ChatGoogleGenerativeAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.state import AgentState
 from app.core.config import settings
+from app.core.exceptions import LLMProviderError, RateLimitError
 from app.services import retrieval_service
 from app.services.embedding_service import get_embedding_provider
+from app.services.llm_factory import get_router_llm, get_synthesis_llm
 
 logger = logging.getLogger(__name__)
 
@@ -44,27 +46,43 @@ _SYNTHESIS_SYSTEM = (
 )
 
 
+def _wrap_llm_exception(exc: Exception, provider_hint: str = "LLM") -> None:
+    """Convert a bare exception to RateLimitError or LLMProviderError and re-raise."""
+    error_str = str(exc)
+    if (
+        "429" in error_str
+        or "RESOURCE_EXHAUSTED" in error_str
+        or "quota" in error_str.lower()
+        or "rate limit" in error_str.lower()
+    ):
+        retry_match = re.search(r"retry.*?(\d+)", error_str, re.IGNORECASE)
+        retry_after = int(retry_match.group(1)) if retry_match else None
+        raise RateLimitError("Gemini", retry_after) from exc
+    raise LLMProviderError(provider_hint, error_str[:200]) from exc
+
+
 async def router_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     Determine routing for the current query.
 
     Checks if the user has ready documents, then makes a lightweight LLM call
-    to classify the query into one of four routing options.
+    to classify the query into one of five routing options.
     """
     db: AsyncSession = config["configurable"]["db"]
     user_id: UUID = config["configurable"]["user_id"]
 
     has_docs = await retrieval_service.has_ready_documents(db, user_id)
 
-    llm = ChatGoogleGenerativeAI(
-        model=settings.GEMINI_LLM_MODEL,
-        google_api_key=settings.GEMINI_API_KEY,
-        temperature=0,
-    )
+    llm = get_router_llm()
     prompt = _ROUTER_PROMPT.format(has_docs=has_docs, query=state["query"])
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    route = str(response.content).strip().lower()
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+    except (RateLimitError, LLMProviderError):
+        raise
+    except Exception as exc:
+        _wrap_llm_exception(exc)
 
+    route = str(response.content).strip().lower()
     if route not in _VALID_ROUTES:
         route = "retrieval" if has_docs else "llm_only"
 
@@ -120,8 +138,13 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
     Combine retrieved context with conversation history and generate a final answer.
 
     Builds a context block from document chunks, web results, and/or data analysis
-    results, prepends it as a system message, then calls the Gemini LLM with the
-    full chat history.
+    results, prepends it as a system message, then calls the LLM with the full
+    chat history.
+
+    For LangChain-native LLMs (Gemini): uses astream so individual tokens are
+    captured by stream_agent_events via on_chat_model_stream events.
+    For CloudflareLLM: uses ainvoke (no per-token streaming — the full answer is
+    captured from the on_chain_end event in stream_agent_events).
     """
 
     # Build context block from whichever tools ran
@@ -172,32 +195,42 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
             SystemMessage(content=f"Use the following context to answer:\n\n{context_block}")
         )
 
-    # Append full conversation history (includes the current user turn)
     for msg in state["messages"]:
         if msg["role"] == "user":
             lc_messages.append(HumanMessage(content=msg["content"]))
         else:
             lc_messages.append(AIMessage(content=msg["content"]))
 
-    llm = ChatGoogleGenerativeAI(
-        model=settings.GEMINI_LLM_MODEL,
-        google_api_key=settings.GEMINI_API_KEY,
-        temperature=0.7,
-    )
-    # Use astream so astream_events captures individual tokens for the SSE streaming endpoint.
-    # The collected answer is identical to ainvoke for the non-streaming path.
-    # The last chunk from Gemini contains usage_metadata with token counts.
+    llm = get_synthesis_llm()
     answer_parts: list[str] = []
     input_tokens = 0
     output_tokens = 0
 
-    async for chunk in llm.astream(lc_messages, config=config):
-        if chunk.content:
-            answer_parts.append(str(chunk.content))
-        # usage_metadata is populated on the final chunk by ChatGoogleGenerativeAI
-        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-            input_tokens = chunk.usage_metadata.get("input_tokens", 0) or 0
-            output_tokens = chunk.usage_metadata.get("output_tokens", 0) or 0
+    from app.services.cloudflare_llm import CloudflareLLM
+
+    if isinstance(llm, CloudflareLLM):
+        # Cloudflare doesn't support per-token streaming via LangGraph events.
+        # The full answer is captured from the on_chain_end event in stream_agent_events.
+        try:
+            response = await llm.ainvoke(lc_messages)
+        except (RateLimitError, LLMProviderError):
+            raise
+        except Exception as exc:
+            _wrap_llm_exception(exc, "Cloudflare Workers AI")
+        answer_parts.append(str(response.content))
+    else:
+        # LangChain-native models (Gemini): stream tokens so SSE sees on_chat_model_stream.
+        try:
+            async for chunk in llm.astream(lc_messages, config=config):
+                if chunk.content:
+                    answer_parts.append(str(chunk.content))
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    input_tokens = chunk.usage_metadata.get("input_tokens", 0) or 0
+                    output_tokens = chunk.usage_metadata.get("output_tokens", 0) or 0
+        except (RateLimitError, LLMProviderError):
+            raise
+        except Exception as exc:
+            _wrap_llm_exception(exc)
 
     answer = "".join(answer_parts)
 

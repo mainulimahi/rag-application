@@ -174,4 +174,4 @@ export type StreamEvent =
   | { type: 'status'; content: string }
   | { type: 'token'; content: string }
   | { type: 'done'; user_message: ChatMessage; assistant_message: ChatMessage; thread: ChatThread | null; data_analysis?: DataAnalysisResult | null }
-  | { type: 'error'; content: string }
+  | { type: 'error'; content: string; error_type: 'rate_limit' | 'provider_error' | 'stream_error'; provider?: string }

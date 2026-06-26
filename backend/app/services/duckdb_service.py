@@ -8,17 +8,19 @@ on query timeout; the service layer converts these to HTTPExceptions.
 
 from __future__ import annotations
 
+import decimal
 import io
 import json
 import logging
 import math
 import re
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -145,7 +147,27 @@ def _build_query_expr(
                 raise ValueError(
                     "Legacy .xls format is not supported. Convert to .xlsx and try again."
                 )
-            df_excel = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+            # Multi-sheet selection: find the sheet with the most rows.
+            xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+            sheet_names = xl.sheet_names
+
+            best_sheet = sheet_names[0]
+            best_rows = 0
+            for sheet in sheet_names:
+                try:
+                    xl.parse(sheet, nrows=5)  # verify sheet is readable before full load
+                    full_df = xl.parse(sheet)
+                    if len(full_df) > best_rows:
+                        best_rows = len(full_df)
+                        best_sheet = sheet
+                except Exception:
+                    continue
+
+            logger.info(
+                "Excel: selected sheet '%s' (%d rows) from %d sheets",
+                best_sheet, best_rows, len(sheet_names),
+            )
+            df_excel = xl.parse(best_sheet)
             conn.register("_excel_view", df_excel)
             return "_excel_view"
 
@@ -192,7 +214,7 @@ def extract_schema(file_bytes: bytes, filename: str) -> dict:
                     sample_rows = conn.execute(
                         f"SELECT {cq} FROM {qexpr} WHERE {cq} IS NOT NULL LIMIT 5"
                     ).fetchall()
-                    sample_values = [_safe_value(r[0]) for r in sample_rows]
+                    sample_values = [_serialize_value(r[0]) for r in sample_rows]
                 except Exception:
                     sample_values = []
 
@@ -249,10 +271,25 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
         conn = duckdb.connect()
         try:
             _build_query_expr(conn, path, ext, file_bytes)  # registers excel view if needed
-            safe_path = str(path).replace("'", "''")
-            sql_patched = sql.replace(filename, safe_path)
+            safe_path = str(path)
+
+            # Replace all quoted filename references (handles single and double quotes,
+            # case-insensitive, covers read_csv/read_excel/read_auto/etc.)
+            escaped_filename = re.escape(filename)
+            sql_with_path = re.sub(
+                rf"(['\"]){escaped_filename}(['\"])",
+                f"'{safe_path}'",
+                sql,
+                flags=re.IGNORECASE,
+            )
+            # Catch any remaining bare occurrences the regex missed
+            if filename in sql_with_path:
+                sql_with_path = sql_with_path.replace(f"'{filename}'", f"'{safe_path}'")
+                sql_with_path = sql_with_path.replace(f'"{filename}"', f"'{safe_path}'")
+
+            logger.debug("Executing SQL: %s", sql_with_path[:200])
             try:
-                df = _execute_with_timeout(conn, sql_patched, QUERY_TIMEOUT_SECONDS)
+                df = _execute_with_timeout(conn, sql_with_path, QUERY_TIMEOUT_SECONDS)
             except TimeoutError:
                 raise
             except duckdb.Error as exc:
@@ -419,7 +456,7 @@ def _wrap_dataframe(df: pd.DataFrame) -> dict:
     if truncated:
         df = df.head(MAX_RESULT_ROWS)
 
-    rows = json.loads(df.to_json(orient="values", default_handler=str))
+    rows = [[_serialize_value(cell) for cell in row] for row in df.values.tolist()]
 
     return {
         "columns": list(df.columns),
@@ -439,20 +476,42 @@ def generate_summary_stats(df: pd.DataFrame) -> dict:
         non_null = series.dropna()
         if pd.api.types.is_numeric_dtype(series):
             stats[col] = {
-                "min": _safe_scalar(non_null.min() if len(non_null) else None),
-                "max": _safe_scalar(non_null.max() if len(non_null) else None),
-                "mean": _safe_scalar(non_null.mean() if len(non_null) else None),
-                "median": _safe_scalar(non_null.median() if len(non_null) else None),
-                "std": _safe_scalar(non_null.std() if len(non_null) else None),
+                "min": _serialize_value(non_null.min() if len(non_null) else None),
+                "max": _serialize_value(non_null.max() if len(non_null) else None),
+                "mean": _serialize_value(non_null.mean() if len(non_null) else None),
+                "median": _serialize_value(non_null.median() if len(non_null) else None),
+                "std": _serialize_value(non_null.std() if len(non_null) else None),
                 "non_null_count": int(len(non_null)),
             }
         else:
             vc = non_null.astype(str).value_counts().head(5)
             stats[col] = {
                 "unique_count": int(non_null.nunique()),
-                "top_5": [{"value": v, "count": int(c)} for v, c in vc.items()],
+                "top_5": [{"value": _serialize_value(v), "count": int(c)} for v, c in vc.items()],
             }
     return stats
+
+
+def _serialize_value(val: object) -> object:
+    """Convert a single cell value to a JSON-safe Python primitive."""
+    if val is None:
+        return None
+    if isinstance(val, (datetime, date, time)):
+        return val.isoformat()
+    if isinstance(val, decimal.Decimal):
+        return float(val)
+    if isinstance(val, np.integer):
+        return int(val)
+    if isinstance(val, np.floating):
+        v = float(val)
+        return None if (math.isnan(v) or math.isinf(v)) else v
+    if isinstance(val, np.bool_):
+        return bool(val)
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+    return val
 
 
 def _safe_scalar(v: object) -> object:

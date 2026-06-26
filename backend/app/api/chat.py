@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import run_agent
 from app.agents.graph import stream_agent_events
+from app.core.exceptions import LLMProviderError, RateLimitError
 from app.core.limiter import get_user_id_key, limiter
 from app.core.security import get_current_user
 from app.db.session import get_db
@@ -243,9 +244,29 @@ async def create_thread_message(
         for m in history
     ]
 
-    assistant_content, sources, input_tokens, output_tokens, data_analysis_result = (
-        await run_agent(db, current_user.id, llm_messages)
-    )
+    try:
+        assistant_content, sources, input_tokens, output_tokens, data_analysis_result = (
+            await run_agent(db, current_user.id, llm_messages)
+        )
+    except RateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "detail": "rate_limit",
+                "provider": exc.provider,
+                "message": str(exc),
+                "retry_after": exc.retry_after,
+            },
+        ) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "detail": "provider_error",
+                "provider": exc.provider,
+                "message": str(exc),
+            },
+        ) from exc
 
     assistant_msg = await chat_service.create_assistant_message(
         db, thread_id, current_user.id, assistant_content, sources, input_tokens, output_tokens
@@ -321,7 +342,12 @@ async def create_thread_message_stream(
             final_data_analysis: dict | None = None
 
             async for event in stream_agent_events(db, current_user.id, llm_messages):
-                if event["type"] == "final":
+                if event["type"] == "error":
+                    # Provider error from stream_agent_events — forward to client and stop.
+                    # Do NOT write a failed assistant message to the DB.
+                    yield f"data: {json.dumps(event)}\n\n"
+                    return
+                elif event["type"] == "final":
                     final_answer = event["answer"]
                     final_sources = event["sources"]
                     final_input_tokens = event.get("input_tokens", 0)
@@ -359,7 +385,7 @@ async def create_thread_message_stream(
 
         except Exception as exc:
             logger.error("SSE stream error for thread %s: %s", thread_id, exc)
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Stream failed — please retry'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Stream failed — please retry', 'error_type': 'stream_error'})}\n\n"
 
     return StreamingResponse(
         generate(),
