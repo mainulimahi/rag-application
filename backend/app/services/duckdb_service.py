@@ -256,49 +256,109 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
     """
     Execute user SQL against an uploaded file.
 
-    References to the original filename in the SQL are replaced with the actual
-    temp file path before execution.
+    Excel files (.xlsx/.xls) are loaded via pandas into a DuckDB in-memory relation
+    named 'data_table'; the SQL is rewritten to reference that name. All other formats
+    substitute the actual temp file path into the SQL and execute directly.
+
+    Runs synchronously in the caller's thread (query_file is invoked via
+    run_in_executor, so it is already on a worker thread). DuckDB connections are
+    not thread-safe, so we never share a connection across threads.
 
     Returns:
         {columns, rows, row_count, total_row_count, truncated, summary_stats}
     """
+    logger.info("query_file() called: filename=%s, sql=%s", filename, sql[:100])
+
     ext = Path(filename).suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file format '{ext}'")
 
-    path = _write_temp_file(file_bytes, filename)
     try:
-        conn = duckdb.connect()
-        try:
-            _build_query_expr(conn, path, ext, file_bytes)  # registers excel view if needed
-            safe_path = str(path)
+        path = _write_temp_file(file_bytes, filename)
+    except Exception as e:
+        logger.error("query_file error writing temp file for '%s': %s", filename, e, exc_info=True)
+        raise
 
-            # Replace all quoted filename references (handles single and double quotes,
-            # case-insensitive, covers read_csv/read_excel/read_auto/etc.)
-            escaped_filename = re.escape(filename)
+    logger.info(
+        "Temp file written: %s, exists=%s, size=%d",
+        path, path.exists(), path.stat().st_size,
+    )
+
+    try:
+        base_name = re.escape(Path(filename).stem)
+
+        if ext in (".xlsx", ".xls"):
+            logger.info("Excel file: loading via pandas → DuckDB in-memory table")
+            try:
+                df_excel = pd.read_excel(path, sheet_name=0, engine="openpyxl")
+            except Exception as e:
+                logger.error("query_file error reading Excel file '%s': %s", filename, e, exc_info=True)
+                raise ValueError(f"Could not read Excel file: {e}") from e
+
+            conn = duckdb.connect()
+            try:
+                conn.register("data_table", df_excel)
+
+                # Replace read_*('...basename...') calls with the registered view name
+                rewritten_sql = re.sub(
+                    rf"(read_\w+\s*\(\s*['\"][^'\"]*{base_name}[^'\"]*['\"]\s*\))",
+                    "data_table",
+                    sql,
+                    flags=re.IGNORECASE,
+                )
+                # Handle bare quoted paths not already substituted by the first pass
+                if "data_table" not in rewritten_sql:
+                    rewritten_sql = re.sub(
+                        rf"['\"][^'\"]*{base_name}[^'\"]*['\"]",
+                        "data_table",
+                        rewritten_sql,
+                        flags=re.IGNORECASE,
+                    )
+
+                logger.info("Rewritten SQL: %s", rewritten_sql[:200])
+                try:
+                    df = conn.execute(rewritten_sql).fetchdf()
+                except Exception as e:
+                    logger.error("query_file error executing rewritten SQL: %s", e, exc_info=True)
+                    raise ValueError(f"Query failed: {e}") from e
+            finally:
+                conn.close()
+
+        else:
+            safe_path = str(path)
             sql_with_path = re.sub(
-                rf"(['\"]){escaped_filename}(['\"])",
+                rf"['\"][^'\"]*{base_name}[^'\"]*['\"]",
                 f"'{safe_path}'",
                 sql,
                 flags=re.IGNORECASE,
             )
-            # Catch any remaining bare occurrences the regex missed
-            if filename in sql_with_path:
-                sql_with_path = sql_with_path.replace(f"'{filename}'", f"'{safe_path}'")
-                sql_with_path = sql_with_path.replace(f'"{filename}"', f"'{safe_path}'")
+            # Normalise read_auto() → the correct reader for this extension
+            suffix = path.suffix.lower()
+            if suffix == ".csv":
+                sql_with_path = sql_with_path.replace("read_auto(", "read_csv_auto(")
+            elif suffix in (".xlsx", ".xls"):
+                sql_with_path = sql_with_path.replace("read_auto(", "read_xlsx(")
+            elif suffix == ".parquet":
+                sql_with_path = sql_with_path.replace("read_auto(", "read_parquet(")
+            elif suffix == ".json":
+                sql_with_path = sql_with_path.replace("read_auto(", "read_json_auto(")
 
-            logger.debug("Executing SQL: %s", sql_with_path[:200])
+            logger.info("SQL after path fix: %s", sql_with_path[:200])
+
+            conn = duckdb.connect()
             try:
-                df = _execute_with_timeout(conn, sql_with_path, QUERY_TIMEOUT_SECONDS)
-            except TimeoutError:
-                raise
-            except duckdb.Error as exc:
-                raise ValueError(f"Query failed: {exc}") from exc
-        finally:
-            conn.close()
+                try:
+                    df = conn.execute(sql_with_path).fetchdf()
+                except Exception as e:
+                    logger.error("query_file error executing SQL: %s", e, exc_info=True)
+                    raise ValueError(f"Query failed: {e}") from e
+            finally:
+                conn.close()
+
     finally:
         _cleanup_temp_file(path)
 
+    logger.info("Query returned %d rows", len(df))
     result = _wrap_dataframe(df)
     logger.info(
         "DuckDB query executed — user_id=%s, source='%s', rows=%d, truncated=%s, sql_preview='%s...'",
@@ -308,6 +368,53 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
         result["truncated"],
         sql[:80],
     )
+    return result
+
+
+# ── Cached file query ─────────────────────────────────────────────────────────
+
+
+def _normalise_sql(sql: str) -> str:
+    """Return a canonical form of sql used only for cache-key derivation.
+
+    Collapses all whitespace runs to a single space and lowercases the string
+    so minor LLM formatting differences (extra newlines, capitalisation) don't
+    produce different cache keys for semantically identical queries.
+    The original sql is passed to DuckDB unchanged.
+    """
+    return " ".join(sql.split()).lower()
+
+
+async def query_file_cached(
+    file_bytes: bytes,
+    filename: str,
+    sql: str,
+    file_id: str,
+    user_id: object = None,
+) -> dict:
+    """Async wrapper around query_file with Redis caching.
+
+    Checks the cache before spinning up DuckDB; stores the result on a miss.
+    Cache key is derived from file_id + normalised sql so minor LLM formatting
+    variations (whitespace, casing) don't bust the cache.
+    """
+    import asyncio
+
+    from app.services.cache import cache_key, get_cached, set_cached
+
+    key = cache_key("duckdb", file_id, _normalise_sql(sql))
+    cached = await get_cached(key)
+    if cached is not None:
+        logger.info("DuckDB cache HIT: file_id=%s key=%s sql_preview=%r", file_id, key, sql[:60])
+        return cached
+
+    logger.info("DuckDB cache MISS: file_id=%s key=%s sql_preview=%r", file_id, key, sql[:60])
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: query_file(file_bytes, filename, sql, user_id=user_id),
+    )
+    await set_cached(key, result, ttl=600)
     return result
 
 

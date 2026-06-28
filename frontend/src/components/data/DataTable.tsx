@@ -20,6 +20,14 @@ function isNumericColumn(colIdx: number, rows: unknown[][]): boolean {
   return nonNullVals.every((v) => !isNaN(Number(v)))
 }
 
+function formatCellValue(value: unknown): string {
+  if (typeof value !== 'number') return String(value)
+  if (Number.isInteger(value)) {
+    return value.toLocaleString('en-US')
+  }
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 })
+}
+
 function buildCsv(columns: string[], rows: unknown[][]): string {
   const esc = (v: unknown) => {
     const s = v === null || v === undefined ? '' : String(v)
@@ -91,7 +99,7 @@ export default function DataTable({ columns, rows, truncated, row_count, total_r
                     {cell === null || cell === undefined ? (
                       <span className="data-table-null">null</span>
                     ) : (
-                      String(cell)
+                      formatCellValue(cell)
                     )}
                   </td>
                 ))}

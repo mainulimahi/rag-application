@@ -18,6 +18,7 @@ from app.agents.state import AgentState
 from app.core.config import settings
 from app.core.exceptions import LLMProviderError, RateLimitError
 from app.services import retrieval_service
+from app.services.cache import delete_cached, get_cached, set_cached
 from app.services.embedding_service import get_embedding_provider
 from app.services.llm_factory import get_router_llm, get_synthesis_llm
 
@@ -71,7 +72,14 @@ async def router_node(state: AgentState, config: RunnableConfig) -> dict:
     db: AsyncSession = config["configurable"]["db"]
     user_id: UUID = config["configurable"]["user_id"]
 
-    has_docs = await retrieval_service.has_ready_documents(db, user_id)
+    cache_k = f"doc_count:{user_id}"
+    cached = await get_cached(cache_k)
+    if cached is not None:
+        has_docs = cached["count"] > 0
+    else:
+        count = await retrieval_service.count_ready_documents(db, user_id)
+        await set_cached(cache_k, {"count": count}, ttl=60)
+        has_docs = count > 0
 
     llm = get_router_llm()
     prompt = _ROUTER_PROMPT.format(has_docs=has_docs, query=state["query"])
@@ -153,16 +161,38 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
     data_result = state.get("data_analysis_result")
 
     if data_result and "error" not in data_result:
-        stats_summary = ", ".join(
-            f"{col}: {list(stats.values())[:2]}" for col, stats in (data_result.get("summary_stats") or {}).items()
+        columns = data_result.get("columns", [])
+        rows = data_result.get("rows", [])
+        row_count = data_result.get("row_count", 0)
+        total_row_count = data_result.get("total_row_count", row_count)
+
+        display_rows = rows[:50]
+        header = " | ".join(str(c) for c in columns)
+        table_lines = "\n".join(
+            " | ".join(str(cell) for cell in row) for row in display_rows
         )
+
+        if total_row_count > row_count:
+            row_note = f"{row_count} rows shown of {total_row_count} total — truncated to 500"
+        elif len(display_rows) < row_count:
+            row_note = f"showing first {len(display_rows)} of {row_count} rows"
+        else:
+            row_note = f"{row_count} rows"
+
         context_parts.append(
             f"## Data analysis result:\n"
             f"SQL executed: {data_result['sql']}\n"
-            f"Rows returned: {data_result['row_count']} (of {data_result['total_row_count']} total"
-            + (" — truncated to 500" if data_result.get('truncated') else "") + ")\n"
-            f"Columns: {', '.join(data_result.get('columns', []))}\n"
-            f"Summary stats: {stats_summary or '(none)'}"
+            f"Query result ({row_note}):\n"
+            f"{header}\n"
+            f"{table_lines}\n\n"
+            f"You are a data analyst. The user has already seen the full data table. "
+            f"DO NOT list or repeat any rows, values, or numbers from the table. "
+            f"Instead write exactly 2 sentences maximum: "
+            f"Sentence 1: The single most important finding (highest, lowest, biggest gap, "
+            f"dominant category, etc.) with one specific number as evidence. "
+            f"Sentence 2: A pattern, trend, or business implication from the data. "
+            f"Be specific. Be concise. No bullet points. No preamble like 'According to...' "
+            f"or 'The query result shows...'. Start directly with the insight."
         )
     elif data_result and data_result.get("error") == "no_sources":
         context_parts.append(

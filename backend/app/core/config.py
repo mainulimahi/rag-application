@@ -89,6 +89,9 @@ class Settings(BaseSettings):
             )
         return v
 
+    # Redis
+    REDIS_URL: str = "redis://redis:6379"
+
     # App
     ENVIRONMENT: str = "local"
     LOG_LEVEL: str = "info"

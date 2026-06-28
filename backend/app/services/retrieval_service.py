@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.document import Document, DocumentChunk
 
 
-async def has_ready_documents(db: AsyncSession, user_id: UUID) -> bool:
-    """Return True if the user has at least one document with status='ready'."""
+async def count_ready_documents(db: AsyncSession, user_id: UUID) -> int:
+    """Return the count of documents with status='ready' for the user."""
     result = await db.execute(
         sa.select(sa.func.count())
         .select_from(Document)
@@ -22,7 +22,12 @@ async def has_ready_documents(db: AsyncSession, user_id: UUID) -> bool:
             Document.status == "ready",
         )
     )
-    return result.scalar_one() > 0
+    return result.scalar_one()
+
+
+async def has_ready_documents(db: AsyncSession, user_id: UUID) -> bool:
+    """Return True if the user has at least one document with status='ready'."""
+    return await count_ready_documents(db, user_id) > 0
 
 
 async def similarity_search(

@@ -271,14 +271,6 @@ export default function ChatSidebar({
             </>
           )}
 
-          {/* Pending (unsaved) new chat — virtual item, no API call yet */}
-          {hasPendingChat && (
-            <div className="chat-thread-item active">
-              <span className="chat-thread-dot" />
-              <span className="chat-thread-title" style={{ fontStyle: 'italic', opacity: 0.85 }}>New Chat</span>
-            </div>
-          )}
-
           {/* Recent / all threads */}
           {unpinned.map((t) => <ThreadItem key={t.id} thread={t} />)}
 

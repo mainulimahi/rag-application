@@ -21,6 +21,7 @@ from app.models.user import User
 from app.schemas.document import DocumentListItem, DocumentStatusResponse, DocumentUploadResponse
 from app.schemas.pagination import PaginatedResponse
 from app.services import document_service
+from app.services.cache import delete_cached
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -73,6 +74,7 @@ async def upload_document(
         content_type=doc.content_type,
     )
 
+    await delete_cached(f"doc_count:{current_user.id}")
     return DocumentUploadResponse.model_validate(doc)
 
 
@@ -140,3 +142,4 @@ async def delete_document(
     deleted = await document_service.delete_document(db, document_id, current_user.id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    await delete_cached(f"doc_count:{current_user.id}")

@@ -223,7 +223,7 @@ export default function ChatMessages({
 
             {/* ── Real messages ── */}
             {!isPending && editingId === msg.id ? (
-              <div style={{ width: '100%', maxWidth: 680 }}>
+              <div style={{ width: '100%' }}>
                 <textarea
                   className="chat-textarea"
                   style={{
@@ -232,10 +232,25 @@ export default function ChatMessages({
                     borderRadius: 'var(--radius)',
                     padding: '0.5rem 0.75rem',
                     background: 'var(--color-surface)',
-                    resize: 'vertical',
+                    resize: 'none',
+                    minHeight: '4.5rem',
+                    overflow: 'hidden',
+                    lineHeight: '1.5',
+                    fontFamily: 'inherit',
+                    fontSize: 'inherit',
+                    boxSizing: 'border-box',
                   }}
+                  rows={3}
                   value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
+                  onChange={(e) => {
+                    setEditValue(e.target.value)
+                    e.target.style.height = 'auto'
+                    e.target.style.height = e.target.scrollHeight + 'px'
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.height = 'auto'
+                    e.target.style.height = e.target.scrollHeight + 'px'
+                  }}
                   onKeyDown={handleEditKeyDown}
                   autoFocus
                 />
@@ -250,21 +265,67 @@ export default function ChatMessages({
               <>
                 {/* Bubble */}
                 {msg.role === 'assistant' && isRegenerating ? (
-                  <div className="chat-bubble assistant-bubble">
-                    <span className="typing-dots"><span /><span /><span /></span>
-                  </div>
-                ) : (
-                  <div className={`chat-bubble${msg.role === 'assistant' ? ' assistant-bubble' : ''}`}>
-                    {msg.role === 'assistant' ? (
-                      <div className="md-body">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={mdComponents}>
-                          {msg.content}
-                        </ReactMarkdown>
+                  <>
+                    {streamingStatus && (
+                      <div className="streaming-status">
+                        <span className="streaming-status-pulse" />
+                        {streamingStatus}
                       </div>
-                    ) : (
-                      msg.content
                     )}
-                  </div>
+                    <div className="chat-bubble assistant-bubble">
+                      <span className="typing-dots"><span /><span /><span /></span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Data table renders FIRST for data_analysis responses */}
+                    {msg.role === 'assistant' && !isRegenerating && msg.data_analysis && (
+                      <div className="data-analysis-block">
+                        {!msg.data_analysis.error ? (
+                          <>
+                            <SummaryStats
+                              summary_stats={msg.data_analysis.summary_stats}
+                              sources_used={msg.data_analysis.sources_used}
+                              row_count={msg.data_analysis.row_count}
+                            />
+                            <SqlDisplay sql={msg.data_analysis.sql} />
+                            <DataTable
+                              columns={msg.data_analysis.columns}
+                              rows={msg.data_analysis.rows}
+                              truncated={msg.data_analysis.truncated}
+                              row_count={msg.data_analysis.row_count}
+                              total_row_count={msg.data_analysis.total_row_count}
+                            />
+                          </>
+                        ) : msg.data_analysis.error === 'no_sources' ? (
+                          <div className="data-source-suggestion">
+                            <span>📊 No data sources connected.</span>
+                            <div className="data-source-suggestion-links">
+                              <Link href="/data-sources" className="data-source-suggestion-btn">
+                                Upload a file →
+                              </Link>
+                              <Link href="/data-sources" className="data-source-suggestion-btn">
+                                Add a connection →
+                              </Link>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {/* LLM synthesis text renders AFTER the table */}
+                    <div className={`chat-bubble${msg.role === 'assistant' ? ' assistant-bubble' : ''}`}>
+                      {msg.role === 'assistant' ? (
+                        <div className="md-body">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={mdComponents}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        msg.content
+                      )}
+                    </div>
+                  </>
                 )}
 
                 {/* Source badge */}
@@ -277,49 +338,20 @@ export default function ChatMessages({
                   </div>
                 )}
 
-                {/* Data analysis results */}
-                {msg.role === 'assistant' && !isRegenerating && msg.data_analysis && (
-                  <div className="data-analysis-block">
-                    {!msg.data_analysis.error ? (
-                      <>
-                        <SummaryStats
-                          summary_stats={msg.data_analysis.summary_stats}
-                          sources_used={msg.data_analysis.sources_used}
-                          row_count={msg.data_analysis.row_count}
-                        />
-                        <SqlDisplay sql={msg.data_analysis.sql} />
-                        <DataTable
-                          columns={msg.data_analysis.columns}
-                          rows={msg.data_analysis.rows}
-                          truncated={msg.data_analysis.truncated}
-                          row_count={msg.data_analysis.row_count}
-                          total_row_count={msg.data_analysis.total_row_count}
-                        />
-                      </>
-                    ) : msg.data_analysis.error === 'no_sources' ? (
-                      <div className="data-source-suggestion">
-                        <span>📊 No data sources connected.</span>
-                        <div className="data-source-suggestion-links">
-                          <Link href="/data-sources" className="data-source-suggestion-btn">
-                            Upload a file →
-                          </Link>
-                          <Link href="/data-sources" className="data-source-suggestion-btn">
-                            Add a connection →
-                          </Link>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-
                 {/* Meta row */}
                 <div className="chat-message-meta">
                   {msg.edited_at && <span className="meta-tag">(edited)</span>}
 
                   {msg.role === 'user' && (
-                    <button className="meta-icon-btn" title="Edit message" disabled={isGenerating} onClick={() => startEdit(msg)}>
-                      <EditIcon /> Edit
-                    </button>
+                    <>
+                      <button className="meta-icon-btn" title={copiedId === msg.id ? 'Copied!' : 'Copy'} onClick={() => handleCopy(msg.id, msg.content)}>
+                        {copiedId === msg.id ? <CheckIcon /> : <CopyIcon />}
+                        {copiedId === msg.id ? 'Copied' : 'Copy'}
+                      </button>
+                      <button className="meta-icon-btn" title="Edit message" disabled={isGenerating} onClick={() => startEdit(msg)}>
+                        <EditIcon /> Edit
+                      </button>
+                    </>
                   )}
 
                   {msg.role === 'assistant' && !isRegenerating && (

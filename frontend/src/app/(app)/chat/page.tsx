@@ -88,13 +88,10 @@ export default function ChatPage() {
         ])
         setUser(currentUser)
 
-        if (existing.length > 0) {
-          await selectThread(existing[0].id)
-        } else {
-          // No threads yet — show pending new chat without creating a DB row
-          setHasPendingChat(true)
-          setMessages([])
-        }
+        // Always land on the empty-state / new-chat screen after sign-in.
+        // Threads are loaded into the sidebar but none is auto-selected.
+        setHasPendingChat(true)
+        setMessages([])
       } catch {
         // Auth failure — middleware redirects to /login
       }
@@ -341,36 +338,51 @@ export default function ChatPage() {
   async function handleEditMessage(messageId: string, content: string) {
     if (isGenerating) return
 
-    const pendingAssistant: DisplayMessage = {
-      id: PENDING_ASSISTANT_ID,
-      thread_id: selectedThreadId ?? '',
-      user_id: '',
-      role: 'assistant',
-      content: '',
-      created_at: new Date().toISOString(),
-      edited_at: null,
-      sources: null,
-      isPending: true,
-    }
-    setMessages((prev) => [...prev, pendingAssistant])
+    // Immediately truncate the message list to everything before the edited
+    // message, then append optimistic pending items — the old response vanishes.
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === messageId)
+      const before = idx >= 0 ? prev.slice(0, idx) : prev
+      const pendingUser: DisplayMessage = {
+        id: PENDING_USER_ID,
+        thread_id: selectedThreadId ?? '',
+        user_id: '',
+        role: 'user',
+        content,
+        created_at: new Date().toISOString(),
+        edited_at: null,
+        sources: null,
+        isPending: true,
+      }
+      const pendingAssistant: DisplayMessage = {
+        id: PENDING_ASSISTANT_ID,
+        thread_id: selectedThreadId ?? '',
+        user_id: '',
+        role: 'assistant',
+        content: '',
+        created_at: new Date().toISOString(),
+        edited_at: null,
+        sources: null,
+        isPending: true,
+      }
+      return [...before, pendingUser, pendingAssistant]
+    })
     setIsGenerating(true)
+    setStreamingStatus('🤔 Thinking…')
 
     try {
       const result = await chatApi.updateMessage(messageId, content)
-      setMessages((prev) => {
-        const deletedSet = new Set(result.deleted_message_ids)
-        return [
-          ...prev
-            .filter((m) => !m.isPending && !deletedSet.has(m.id))
-            .map((m) => (m.id === messageId ? result.updated_message : m)),
-          result.assistant_message,
-        ]
-      })
+      setMessages((prev) => [
+        ...prev.filter((m) => !m.isPending),
+        result.updated_message,
+        result.assistant_message,
+      ])
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.isPending))
       showToast(err instanceof Error ? err.message : 'Failed to edit message', 'error')
     } finally {
       setIsGenerating(false)
+      setStreamingStatus('')
     }
   }
 
@@ -379,6 +391,7 @@ export default function ChatPage() {
 
     setRegeneratingId(messageId)
     setIsGenerating(true)
+    setStreamingStatus('🤔 Thinking…')
 
     try {
       const result = await chatApi.regenerateMessage(messageId)
@@ -390,6 +403,7 @@ export default function ChatPage() {
     } finally {
       setRegeneratingId(null)
       setIsGenerating(false)
+      setStreamingStatus('')
     }
   }
 

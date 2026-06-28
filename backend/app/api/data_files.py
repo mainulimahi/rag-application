@@ -25,6 +25,7 @@ from app.schemas.data_file import (
     DataFileWithSchema,
 )
 from app.services import data_file_service
+from app.services.cache import delete_pattern
 
 router = APIRouter(prefix="/api/data-files", tags=["data-files"])
 logger = logging.getLogger(__name__)
@@ -146,3 +147,5 @@ async def delete_data_file(
 ) -> None:
     """Soft-delete a data file and immediately hard-delete all its schema rows."""
     await data_file_service.delete_data_file(db, current_user.id, file_id)
+    await delete_pattern(f"duckdb:{file_id}:*")
+    logger.info("Cache invalidated for file_id=%s", file_id)
