@@ -19,6 +19,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import time
+
 import duckdb
 import numpy as np
 import pandas as pd
@@ -234,7 +236,7 @@ def extract_schema(file_bytes: bytes, filename: str) -> dict:
 
                 columns.append(
                     {
-                        "name": col_name,
+                        "name": str(col_name).strip().replace(' ', '_'),
                         "type": col_type,
                         "sample_values": sample_values,
                         "null_count": null_count,
@@ -256,9 +258,17 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
     """
     Execute user SQL against an uploaded file.
 
-    Excel files (.xlsx/.xls) are loaded via pandas into a DuckDB in-memory relation
-    named 'data_table'; the SQL is rewritten to reference that name. All other formats
-    substitute the actual temp file path into the SQL and execute directly.
+    Excel files (.xlsx/.xls) are loaded via pandas (dtype=object, keep_default_na=False)
+    into a DuckDB in-memory relation named 'data_table'. After loading, every cell is
+    coerced to str-or-None before conn.register() so DuckDB always infers VARCHAR —
+    this prevents INT32 cast errors on mixed-type columns (e.g. a column that is
+    mostly integers but contains a string like 'EZ'). Column names are sanitised
+    (spaces → underscores) on the loaded DataFrame. All other formats substitute the
+    actual temp file path into the SQL.
+
+    SQL execution is protected by _execute_with_timeout: 120 s for Excel (pandas
+    load is CPU-bound), QUERY_TIMEOUT_SECONDS for all other formats. Result column
+    names are sanitised across all formats before returning.
 
     Runs synchronously in the caller's thread (query_file is invoked via
     run_in_executor, so it is already on a worker thread). DuckDB connections are
@@ -267,33 +277,39 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
     Returns:
         {columns, rows, row_count, total_row_count, truncated, summary_stats}
     """
-    logger.info("query_file() called: filename=%s, sql=%s", filename, sql[:100])
-
     ext = Path(filename).suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file format '{ext}'")
 
-    try:
-        path = _write_temp_file(file_bytes, filename)
-    except Exception as e:
-        logger.error("query_file error writing temp file for '%s': %s", filename, e, exc_info=True)
-        raise
+    path = _write_temp_file(file_bytes, filename)
 
-    logger.info(
-        "Temp file written: %s, exists=%s, size=%d",
-        path, path.exists(), path.stat().st_size,
-    )
-
+    t0 = time.monotonic()
     try:
         base_name = re.escape(Path(filename).stem)
 
         if ext in (".xlsx", ".xls"):
-            logger.info("Excel file: loading via pandas → DuckDB in-memory table")
+            logger.debug("query_file: loading Excel via pandas — %s", filename)
             try:
-                df_excel = pd.read_excel(path, sheet_name=0, engine="openpyxl")
+                df_excel = pd.read_excel(
+                    path, sheet_name=0, engine="openpyxl",
+                    dtype=object, keep_default_na=False,
+                )
             except Exception as e:
-                logger.error("query_file error reading Excel file '%s': %s", filename, e, exc_info=True)
+                logger.debug("query_file: Excel read error for '%s': %s", filename, e, exc_info=True)
                 raise ValueError(f"Could not read Excel file: {e}") from e
+
+            # Sanitise column names: strip whitespace, spaces → underscores.
+            df_excel.columns = [str(c).strip().replace(' ', '_') for c in df_excel.columns]
+            # Coerce every cell to str or None before conn.register() so DuckDB
+            # infers VARCHAR for every column. Without this, DuckDB inspects the
+            # Python objects and infers INT32 for mostly-integer columns — then
+            # throws "Failed to cast value: Could not convert string 'EZ' to INT32"
+            # when it encounters a non-integer value in that column.
+            for col in df_excel.columns:
+                df_excel[col] = df_excel[col].apply(
+                    lambda x: None if (x is None or (isinstance(x, float) and pd.isna(x)))
+                              else str(x)
+                )
 
             conn = duckdb.connect()
             try:
@@ -315,11 +331,12 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
                         flags=re.IGNORECASE,
                     )
 
-                logger.info("Rewritten SQL: %s", rewritten_sql[:200])
+                logger.debug("query_file: rewritten SQL: %s", rewritten_sql[:200])
                 try:
-                    df = conn.execute(rewritten_sql).fetchdf()
+                    # 120 s: pandas + openpyxl parse is CPU-bound; give large files room to breathe.
+                    df = _execute_with_timeout(conn, rewritten_sql, 120)
                 except Exception as e:
-                    logger.error("query_file error executing rewritten SQL: %s", e, exc_info=True)
+                    logger.debug("query_file: SQL execution error: %s", e, exc_info=True)
                     raise ValueError(f"Query failed: {e}") from e
             finally:
                 conn.close()
@@ -343,14 +360,14 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
             elif suffix == ".json":
                 sql_with_path = sql_with_path.replace("read_auto(", "read_json_auto(")
 
-            logger.info("SQL after path fix: %s", sql_with_path[:200])
+            logger.debug("query_file: SQL with path: %s", sql_with_path[:200])
 
             conn = duckdb.connect()
             try:
                 try:
-                    df = conn.execute(sql_with_path).fetchdf()
+                    df = _execute_with_timeout(conn, sql_with_path, QUERY_TIMEOUT_SECONDS)
                 except Exception as e:
-                    logger.error("query_file error executing SQL: %s", e, exc_info=True)
+                    logger.debug("query_file: SQL execution error: %s", e, exc_info=True)
                     raise ValueError(f"Query failed: {e}") from e
             finally:
                 conn.close()
@@ -358,15 +375,17 @@ def query_file(file_bytes: bytes, filename: str, sql: str, user_id: object = Non
     finally:
         _cleanup_temp_file(path)
 
-    logger.info("Query returned %d rows", len(df))
+    elapsed = time.monotonic() - t0
+
+    # Sanitise result column names for all formats — spaces/special chars in column
+    # names from CSV headers, Excel sheets, or SQL aliases cause SQL errors when
+    # the LLM generates unquoted references in follow-up queries.
+    df.columns = [str(c).strip().replace(' ', '_') for c in df.columns]
+
     result = _wrap_dataframe(df)
     logger.info(
-        "DuckDB query executed — user_id=%s, source='%s', rows=%d, truncated=%s, sql_preview='%s...'",
-        user_id,
-        filename,
-        result["row_count"],
-        result["truncated"],
-        sql[:80],
+        "[DUCKDB OK] file=%s rows=%d truncated=%s time=%.2fs",
+        filename, result["row_count"], result["truncated"], elapsed,
     )
     return result
 
@@ -405,10 +424,10 @@ async def query_file_cached(
     key = cache_key("duckdb", file_id, _normalise_sql(sql))
     cached = await get_cached(key)
     if cached is not None:
-        logger.info("DuckDB cache HIT: file_id=%s key=%s sql_preview=%r", file_id, key, sql[:60])
+        logger.info("[CACHE HIT]  file_id=%s sql=%r", file_id[:8], sql[:60])
         return cached
 
-    logger.info("DuckDB cache MISS: file_id=%s key=%s sql_preview=%r", file_id, key, sql[:60])
+    logger.info("[CACHE MISS] file_id=%s sql=%r", file_id[:8], sql[:60])
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
@@ -442,13 +461,8 @@ def query_data_source(
     df = dispatch[source_type](config, sql)
     result = _wrap_dataframe(df)
     logger.info(
-        "DuckDB query executed — user_id=%s, source='%s' (%s), rows=%d, truncated=%s, sql_preview='%s...'",
-        user_id,
-        source_name,
-        source_type,
-        result["row_count"],
-        result["truncated"],
-        sql[:80],
+        "[DUCKDB OK] source=%s (%s) rows=%d truncated=%s",
+        source_name, source_type, result["row_count"], result["truncated"],
     )
     return result
 

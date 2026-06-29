@@ -39,7 +39,7 @@ export interface DataAnalysisResult {
   truncated: boolean
   summary_stats: Record<string, Record<string, unknown>>
   sources_used: Array<{ name: string; type: string }>
-  error?: string
+  error?: string | boolean
   message?: string
 }
 

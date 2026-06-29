@@ -185,7 +185,7 @@ async def _extract_schema_background(
                 DataFileSchema(
                     data_file_id=data_file_id,
                     user_id=user_id,
-                    column_name=col["name"],
+                    column_name=str(col["name"]).strip().replace(' ', '_'),
                     column_type=col["type"],
                     sample_values=(
                         json.dumps(col["sample_values"])
@@ -298,6 +298,18 @@ async def delete_data_file(
         sa.delete(DataFileSchema).where(DataFileSchema.data_file_id == data_file_id)
     )
     await db.commit()
+
+
+async def list_data_file_names(db: AsyncSession, user_id: UUID) -> list[str]:
+    """Return filenames of all ready data files — lightweight query for routing decisions."""
+    result = await db.execute(
+        sa.select(DataFile.filename).where(
+            DataFile.user_id == user_id,
+            DataFile.deleted_at.is_(None),
+            DataFile.status == "ready",
+        )
+    )
+    return [row[0] for row in result.all()]
 
 
 async def get_file_schemas_for_routing(

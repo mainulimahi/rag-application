@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { API_URL, chatApi, usersApi } from '@/lib/api/client'
 import type { User, UserStats } from '@/lib/types'
+import { showToast } from '@/components/Toast'
 
 export default function ProfilePage() {
   const router = useRouter()
@@ -144,7 +145,7 @@ export default function ProfilePage() {
       const result = await chatApi.deleteAllChats(deleteChatsPassword)
       setShowDeleteChatsDialog(false)
       setDeleteChatsPassword('')
-      alert(`Deleted ${result.deleted_count} chat${result.deleted_count !== 1 ? 's' : ''}.`)
+      showToast(`Deleted ${result.deleted_count} chat${result.deleted_count !== 1 ? 's' : ''}`, 'success')
     } catch (err) {
       setDeleteChatsError(err instanceof Error ? err.message : 'Failed to delete chats')
     } finally {

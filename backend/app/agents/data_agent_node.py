@@ -86,8 +86,14 @@ async def select_relevant_sources(
         f"Available connections:\n{connections_context}\n\n"
         "Return ONLY valid JSON in this exact format:\n"
         '{"file_ids": ["<uuid>"], "source_ids": ["<uuid>"], "reason": "brief explanation"}\n\n'
-        "IMPORTANT: Use the exact UUID values shown after 'File ID' and 'Connection ID' above.\n"
-        "Return empty lists if no sources are relevant to this query.\n"
+        "IMPORTANT — use the exact UUID values shown after 'File ID' and 'Connection ID' above.\n"
+        "FUZZY FILENAME MATCHING: Match file names case-insensitively, treating underscores and "
+        "spaces as equivalent, and ignoring file extensions when the query omits them. Examples: "
+        "'kalams bazar' matches 'kalams_bazar.xlsx'; 'HR employee' matches 'hr_employee_analytics.csv'; "
+        "'ecommerce sales' matches 'ecommerce_sales_analytics.xlsx'.\n"
+        "If the query mentions any part of a filename or asks 'what is X?' / 'can you read X?' "
+        "where X resembles a file name, select that file.\n"
+        "Return empty lists only if truly no source is relevant.\n"
         "Do not include any text outside the JSON."
     )
 
@@ -100,7 +106,7 @@ async def select_relevant_sources(
         raise LLMProviderError("LLM", str(exc)[:200]) from exc
     raw = str(response.content).strip()
 
-    logger.info("select_relevant_sources: LLM raw response: %r", raw[:300])
+    logger.debug("select_relevant_sources: LLM raw response: %r", raw[:300])
 
     # Strip markdown fences if the model wraps the JSON
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -144,7 +150,10 @@ async def generate_duckdb_sql(
         "Source '{}' ({}):\n  Columns: {}".format(
             s["source_name"],
             s["source_type"],
-            ", ".join(f"{c['name']}({c['type']})" for c in s["columns"]) or "(unknown)",
+            ", ".join(
+                f"{str(c['name']).strip().replace(' ', '_')}({c['type']})"
+                for c in s["columns"]
+            ) or "(unknown)",
         )
         for s in selected_schemas
     )
@@ -165,6 +174,7 @@ async def generate_duckdb_sql(
         "   - CSV/TSV: read_csv_auto('{filename}')\n"
         "   - Parquet: read_parquet('{filename}')\n"
         "   - JSON: read_json_auto('{filename}')\n"
+        "   - Excel (.xlsx/.xls): read_xlsx('{filename}')\n"
         "   Never use read_auto() — it does not exist in this DuckDB version.\n"
         "3. For database connections, use the table names directly\n"
         "4. ALWAYS prefer aggregations (GROUP BY, SUM, COUNT, AVG, MIN, MAX) over row-level queries\n"
@@ -328,16 +338,13 @@ async def run_data_analysis(
             )
             selected_source_map[c["id"]] = c
 
-    logger.info(
-        "run_data_analysis: resolved %d file(s) and %d connection(s) for execution: %s",
-        len(selected_file_map),
-        len(selected_source_map),
-        [f["filename"] for f in selected_file_map.values()],
-    )
+    _file_names = [f["filename"] for f in selected_file_map.values()]
+    _source_names = [c["name"] for c in selected_source_map.values()]
+    logger.info("[DATA AGENT] selected files=%s sources=%s", _file_names, _source_names)
 
     # Generate SQL
     sql = await generate_duckdb_sql(user_query, selected_schemas, conversation_history)
-    logger.info("Generated SQL for user %s: %s", user_id, sql[:100])
+    logger.info("[SQL GEN] %s", sql[:120])
 
     # Validate SQL before execution
     valid, reason = validate_sql(sql)
@@ -398,8 +405,37 @@ async def run_data_analysis(
             sources_used.append({"name": filename, "type": "file"})
 
         except Exception as exc:
-            logger.error("data_agent: query_file failed for file_id=%s: %s", file_id, exc)
-            return {"error": "query_failed", "message": f"Query execution failed: {exc}"}
+            exc_str = str(exc)
+            if "Binder Error" in exc_str or "not found in FROM clause" in exc_str:
+                error_type = "column_not_found"
+            elif "timed out" in exc_str.lower():
+                error_type = "timeout"
+            else:
+                error_type = "query_failed"
+            file_info = selected_file_map.get(file_id, {})
+            available_columns = [
+                str(col["name"]).strip().replace(' ', '_')
+                for col in file_info.get("columns", [])
+            ]
+            logger.error(
+                "[DATA AGENT ERR] file_id=%s type=%s: %s",
+                file_id[:8], error_type, exc,
+            )
+            return {
+                "error": True,
+                "error_type": error_type,
+                "error_message": exc_str[:500],
+                "sources": [file_info.get("filename", "unknown")],
+                "available_columns": available_columns,
+                "sql": sql,
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "total_row_count": 0,
+                "truncated": False,
+                "summary_stats": {},
+                "sources_used": [],
+            }
 
     for source_id in selected_source_map:
         try:
@@ -442,10 +478,8 @@ async def run_data_analysis(
 
     row_count = len(all_rows)
     logger.info(
-        "Data analysis complete — user %s: %d rows, sources: %s",
-        user_id,
-        row_count,
-        [s["name"] for s in sources_used],
+        "[DATA AGENT] done rows=%d sources=%s",
+        row_count, [s["name"] for s in sources_used],
     )
 
     return {

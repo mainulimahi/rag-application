@@ -51,8 +51,8 @@ export default function ConnectionsTab() {
     try {
       const data = await dataSourcesApi.list()
       setSources(data)
-    } catch (err) {
-      console.error('Failed to load data sources', err)
+    } catch {
+      showToast('Failed to load connections', 'error')
     } finally {
       setIsLoading(false)
     }
@@ -142,7 +142,7 @@ export default function ConnectionsTab() {
 
                   {/* Name + meta */}
                   <div className="ds-conn-info">
-                    <span className="ds-conn-name">{source.name}</span>
+                    <span className="ds-conn-name" title={source.name}>{source.name}</span>
                     <span className="docs-item-meta">
                       Tested: {relativeTime(source.last_tested_at)}
                       {source.last_test_error && ` · ${source.last_test_error}`}
@@ -165,10 +165,10 @@ export default function ConnectionsTab() {
                       {ts?.loading ? <span className="docs-spinner" /> : <PlayIcon />}
                       Test
                     </button>
-                    <button className="ds-conn-btn" onClick={() => handleEdit(source)} title="Edit">
+                    <button className="ds-conn-btn" onClick={() => handleEdit(source)} title="Edit" aria-label={`Edit ${source.name}`}>
                       <PencilIcon />
                     </button>
-                    <button className="ds-conn-btn danger" onClick={() => handleDelete(source)} title="Delete">
+                    <button className="ds-conn-btn danger" onClick={() => handleDelete(source)} title="Delete" aria-label={`Delete ${source.name}`}>
                       <TrashIcon />
                     </button>
                   </div>

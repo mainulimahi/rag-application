@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { documentApi } from '@/lib/api/client'
 import type { DocumentListItem } from '@/lib/types'
+import { showToast } from '@/components/Toast'
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.txt', '.md']
 const MAX_SIZE_MB = 20
@@ -34,8 +35,8 @@ export default function DocumentsPanel() {
           startPolling(doc.id)
         }
       }
-    } catch (err) {
-      console.error('Failed to load documents', err)
+    } catch {
+      showToast('Failed to load documents', 'error')
     } finally {
       setIsLoading(false)
     }
@@ -143,8 +144,8 @@ export default function DocumentsPanel() {
       for (const doc of data.items) {
         if (doc.status === 'processing') startPolling(doc.id)
       }
-    } catch (err) {
-      console.error('Failed to load more documents', err)
+    } catch {
+      showToast('Failed to load more documents', 'error')
     } finally {
       setIsLoadingMore(false)
     }
@@ -157,8 +158,8 @@ export default function DocumentsPanel() {
       clearInterval(pollingRefs.current.get(documentId))
       pollingRefs.current.delete(documentId)
       setDocuments((prev) => prev.filter((d) => d.id !== documentId))
-    } catch (err) {
-      console.error('Failed to delete document', err)
+    } catch {
+      showToast('Failed to delete document', 'error')
     }
   }
 
@@ -170,7 +171,7 @@ export default function DocumentsPanel() {
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => { if (!uploadingFile) fileInputRef.current?.click() }}
       >
         <input
           ref={fileInputRef}
@@ -234,6 +235,7 @@ export default function DocumentsPanel() {
               <button
                 className="docs-delete-btn"
                 title="Delete document"
+                aria-label={`Delete ${doc.filename}`}
                 onClick={() => handleDelete(doc.id, doc.filename)}
                 disabled={uploadingFile !== null}
               >

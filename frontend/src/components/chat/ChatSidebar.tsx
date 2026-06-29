@@ -189,17 +189,19 @@ export default function ChatSidebar({
             <button
               className={`chat-icon-btn${thread.pinned ? ' pinned' : ''}`}
               title={thread.pinned ? 'Unpin' : 'Pin'}
+              aria-label={thread.pinned ? `Unpin "${thread.title}"` : `Pin "${thread.title}"`}
               onClick={() => onPinThread(thread.id)}
             >
               <PinIcon pinned={thread.pinned} />
             </button>
-            <button className="chat-icon-btn" title="Rename" onClick={() => startRename(thread)}>
+            <button className="chat-icon-btn" title="Rename" aria-label={`Rename "${thread.title}"`} onClick={() => startRename(thread)}>
               <PencilIcon />
             </button>
             {!thread.pinned && (
               <button
                 className="chat-icon-btn danger"
                 title="Delete"
+                aria-label={`Delete "${thread.title}"`}
                 onClick={() => handleDelete(thread.id, thread.title)}
               >
                 <TrashIcon />
@@ -240,6 +242,7 @@ export default function ChatSidebar({
             className="sidebar-collapse-btn"
             onClick={toggleCollapse}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
           </button>
@@ -303,7 +306,7 @@ export default function ChatSidebar({
               <span className="sidebar-avatar">
                 {avatarSrc ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={avatarSrc} alt="" className="sidebar-avatar-img" crossOrigin="use-credentials" />
+                  <img src={avatarSrc} alt={user?.name ?? 'Profile picture'} className="sidebar-avatar-img" crossOrigin="use-credentials" />
                 ) : (
                   <span className="sidebar-avatar-initials">{initials}</span>
                 )}
@@ -311,7 +314,7 @@ export default function ChatSidebar({
               <span className="sidebar-user-name">{user?.name ?? '…'}</span>
             </Link>
 
-            <button className="logout-btn" onClick={onLogout} title="Sign out">
+            <button className="logout-btn" onClick={onLogout} title="Sign out" aria-label="Sign out">
               <LogoutIcon />
             </button>
           </div>

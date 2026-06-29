@@ -1,6 +1,7 @@
 """FastAPI application entrypoint."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import sqlalchemy as sa
@@ -25,9 +26,40 @@ from app.services import duckdb_service
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
+    format="%(asctime)s %(levelname)-8s %(name)-30s %(message)s",
+    datefmt="%H:%M:%S",
 )
+
+# Silence SQLAlchemy engine/pool — SQL queries are only visible at DEBUG level.
+for _noisy_logger in (
+    "sqlalchemy.engine",
+    "sqlalchemy.pool",
+    "sqlalchemy.dialects",
+    "httpx",
+    "httpcore",
+    "google_genai",
+    "google.generativeai",
+    "langchain",
+    "langchain_core",
+):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
+
+class _EndpointFilter(logging.Filter):
+    """Drop uvicorn access-log records for the /health probe."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/health" not in record.getMessage()
+
+
+# Silence uvicorn's access log — the log_requests middleware below produces a
+# single clean line per request in our format, avoiding double-logging.
+# The EndpointFilter is added as a belt-and-suspenders guard if the level is
+# temporarily lowered to INFO for debugging.
+_uvicorn_access = logging.getLogger("uvicorn.access")
+_uvicorn_access.setLevel(logging.WARNING)
+_uvicorn_access.addFilter(_EndpointFilter())
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,9 +135,13 @@ async def add_security_headers(request: Request, call_next):  # type: ignore[typ
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):  # type: ignore[type-arg]
-    """Log every request at INFO level with the final status code."""
+    """Log non-health requests with method, path, status and elapsed time."""
+    if request.url.path == "/health":
+        return await call_next(request)
+    t0 = time.monotonic()
     response = await call_next(request)
-    logger.info("%s %s → %d", request.method, request.url.path, response.status_code)
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    logger.info("[%s] %s → %d (%dms)", request.method, request.url.path, response.status_code, elapsed_ms)
     return response
 
 

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.state import AgentState
 from app.core.config import settings
 from app.core.exceptions import LLMProviderError, RateLimitError
-from app.services import retrieval_service
+from app.services import data_file_service, retrieval_service
 from app.services.cache import delete_cached, get_cached, set_cached
 from app.services.embedding_service import get_embedding_provider
 from app.services.llm_factory import get_router_llm, get_synthesis_llm
@@ -30,12 +30,22 @@ _ROUTER_PROMPT = """You are a query router for a RAG assistant. Decide which too
 
 Routing options:
 - "llm_only": General knowledge answerable from training data. No recent events, no user documents required.
-- "retrieval": The answer likely exists in the user's uploaded documents (user HAS documents available). Use for domain-specific, private, or uploaded content.
+- "retrieval": The answer likely exists in the user's uploaded TEXT documents (PDFs, Word docs, text files). Use for domain-specific, private, or uploaded content. NOT for data files listed below.
 - "web_search": Requires current/real-time information — news, prices, live data, recent events, weather, stock prices, anything after training cutoff.
-- "both": Needs the user's documents AND real-time web information together.
-- "data_analysis": The query is about analysing data, numbers, statistics, trends, averages, totals, counts, charts, SQL queries, database questions, or anything that requires querying structured data files or connected databases.
+- "both": Needs the user's text documents AND real-time web information together.
+- "data_analysis": The query requires analysing structured data — numbers, statistics, trends, averages, totals, counts, SQL queries, or anything referencing the user's data files listed below.
 
-User has uploaded documents available: {has_docs}
+User has uploaded text documents available: {has_docs}
+
+User's structured data files available for analysis (CSV, Excel, JSON, Parquet):
+{data_files}
+
+ROUTING RULES (apply in order):
+1. If the user's query references ANY filename from the data files list above — match case-insensitively, ignore underscores vs spaces and file extensions (e.g. "kalams bazar" matches "kalams_bazar.xlsx") — ALWAYS route to "data_analysis".
+2. If the user asks "what is X?", "can you read X?", "show me X", "describe X", "open X", or asks for statistics/columns/schema/data/rows from X, and X resembles a data file name — route to "data_analysis".
+3. If data files are listed above and the query is about data, statistics, trends, counts, or numbers from those files — route to "data_analysis".
+4. Route to "retrieval" only for text document content (PDFs, Word docs) — never for data file queries.
+
 User query: {query}
 
 Respond with exactly one word — one of: llm_only, retrieval, web_search, both, data_analysis"""
@@ -81,8 +91,18 @@ async def router_node(state: AgentState, config: RunnableConfig) -> dict:
         await set_cached(cache_k, {"count": count}, ttl=60)
         has_docs = count > 0
 
+    data_filenames = await data_file_service.list_data_file_names(db, user_id)
+    if data_filenames:
+        data_files_str = "\n".join(f"- {name}" for name in data_filenames)
+    else:
+        data_files_str = "(none — no data files uploaded yet)"
+
     llm = get_router_llm()
-    prompt = _ROUTER_PROMPT.format(has_docs=has_docs, query=state["query"])
+    prompt = _ROUTER_PROMPT.format(
+        has_docs=has_docs,
+        data_files=data_files_str,
+        query=state["query"],
+    )
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
     except (RateLimitError, LLMProviderError):
@@ -95,7 +115,8 @@ async def router_node(state: AgentState, config: RunnableConfig) -> dict:
         route = "retrieval" if has_docs else "llm_only"
 
     logger.info(
-        "agent.router: route=%s has_docs=%s query=%r", route, has_docs, state["query"][:80]
+        "[ROUTER] route=%s has_docs=%s data_files=%d query=%r",
+        route, has_docs, len(data_filenames), state["query"][:60],
     )
     return {"has_documents": has_docs, "route": route}
 
@@ -166,10 +187,39 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
         row_count = data_result.get("row_count", 0)
         total_row_count = data_result.get("total_row_count", row_count)
 
-        display_rows = rows[:50]
-        header = " | ".join(str(c) for c in columns)
+        num_cols = len(columns)
+
+        # Stage 1: row limit scales down with column count to stay within context.
+        if num_cols <= 10:
+            max_rows = 20
+        elif num_cols <= 25:
+            max_rows = 10
+        else:
+            max_rows = 5
+        display_rows = rows[:max_rows]
+
+        # Stage 3: column limit — only first 20 columns in the synthesis prompt.
+        # The full result still goes to the frontend via data_analysis_result.
+        if num_cols > 20:
+            synth_columns = columns[:20]
+            col_note = f"(showing 20 of {num_cols} columns)"
+            synth_rows = [row[:20] for row in display_rows]
+        else:
+            synth_columns = columns
+            col_note = ""
+            synth_rows = display_rows
+
+        # Stage 2: truncate long cell values to 50 chars each.
+        header = " | ".join(
+            (str(c)[:50] + "..." if len(str(c)) > 50 else str(c))
+            for c in synth_columns
+        )
         table_lines = "\n".join(
-            " | ".join(str(cell) for cell in row) for row in display_rows
+            " | ".join(
+                (str(cell)[:50] + "..." if len(str(cell)) > 50 else str(cell))
+                for cell in row
+            )
+            for row in synth_rows
         )
 
         if total_row_count > row_count:
@@ -178,13 +228,20 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
             row_note = f"showing first {len(display_rows)} of {row_count} rows"
         else:
             row_note = f"{row_count} rows"
+        if col_note:
+            row_note = f"{row_note}; {col_note}"
+
+        table_string = f"{header}\n{table_lines}"
+
+        # Token budget guard: hard cap at 8000 characters for the synthesis prompt.
+        if len(table_string) > 8000:
+            table_string = table_string[:8000] + "\n(table truncated to fit context)"
 
         context_parts.append(
             f"## Data analysis result:\n"
             f"SQL executed: {data_result['sql']}\n"
             f"Query result ({row_note}):\n"
-            f"{header}\n"
-            f"{table_lines}\n\n"
+            f"{table_string}\n\n"
             f"You are a data analyst. The user has already seen the full data table. "
             f"DO NOT list or repeat any rows, values, or numbers from the table. "
             f"Instead write exactly 2 sentences maximum: "
@@ -193,6 +250,33 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
             f"Sentence 2: A pattern, trend, or business implication from the data. "
             f"Be specific. Be concise. No bullet points. No preamble like 'According to...' "
             f"or 'The query result shows...'. Start directly with the insight."
+        )
+    elif data_result and data_result.get("error") is True:
+        source_name = (data_result.get("sources") or ["the file"])[0]
+        available_columns: list[str] = data_result.get("available_columns", [])
+        error_type: str = data_result.get("error_type", "query_failed")
+        failed_sql: str = data_result.get("sql", "")
+        cols_display = ", ".join(available_columns[:30])
+        if len(available_columns) > 30:
+            cols_display += f" … and {len(available_columns) - 30} more"
+        context_parts.append(
+            f"## Data query result:\n"
+            f"File queried: {source_name}\n"
+            f"Error type: {error_type}\n"
+            f"SQL attempted: {failed_sql}\n"
+            f"Actual columns in '{source_name}': {cols_display}\n\n"
+            f"Instructions: The user asked a question that cannot be answered with this "
+            f"file's data. Write a response that: "
+            f"(1) States directly that the specific data requested (the column or metric) "
+            f"is not present in this file. "
+            f"(2) Describes what the file actually contains by grouping the column names "
+            f"into 2-3 logical categories based on their prefixes. "
+            f"(3) Suggests 2-3 specific example questions the user CAN ask based on the "
+            f"actual column names listed above. "
+            f"Keep the total response to 3-4 sentences. "
+            f"Do NOT say you don't know what the file is — you know exactly which file "
+            f"was queried. Do NOT speculate about the file's origin beyond what the "
+            f"column names reveal."
         )
     elif data_result and data_result.get("error") == "no_sources":
         context_parts.append(
@@ -267,7 +351,12 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
     # Determine final sources label
     has_docs = bool(state["retrieved_chunks"])
     has_web = bool(state["web_results"])
-    has_data = bool(data_result and "error" not in data_result)
+    has_data = bool(
+        data_result and (
+            "error" not in data_result
+            or data_result.get("error") is True  # query-failed-with-schema still uses data_analysis badge
+        )
+    )
     if has_data:
         sources = "data_analysis"
     elif has_docs and has_web:
@@ -280,7 +369,7 @@ async def synthesis_node(state: AgentState, config: RunnableConfig) -> dict:
         sources = "llm_only"
 
     logger.info(
-        "agent.synthesis: sources=%s answer_len=%d tokens=(%d in / %d out)",
+        "[SYNTHESIS] sources=%s answer_len=%d tokens=(%d in / %d out)",
         sources, len(answer), input_tokens, output_tokens,
     )
     return {

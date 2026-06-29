@@ -39,8 +39,8 @@ export default function DataFilesTab() {
       for (const f of data) {
         if (f.status === 'processing') startPolling(f.id)
       }
-    } catch (err) {
-      console.error('Failed to load data files', err)
+    } catch {
+      showToast('Failed to load data files', 'error')
     } finally {
       setIsLoading(false)
     }
@@ -129,8 +129,8 @@ export default function DataFilesTab() {
     try {
       const full = await dataFilesApi.getSchema(file.id)
       setSchemaCache((prev) => ({ ...prev, [file.id]: full.columns ?? [] }))
-    } catch (e) {
-      console.error('Failed to load schema', e)
+    } catch {
+      showToast('Failed to load schema', 'error')
     } finally {
       setSchemaLoading((prev) => ({ ...prev, [file.id]: false }))
     }
@@ -158,7 +158,7 @@ export default function DataFilesTab() {
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => { if (!uploadingFile) fileInputRef.current?.click() }}
       >
         <input
           ref={fileInputRef}
@@ -227,6 +227,7 @@ export default function DataFilesTab() {
                 <button
                   className="docs-delete-btn"
                   title="Delete file"
+                  aria-label={`Delete ${file.filename}`}
                   onClick={(e) => { e.stopPropagation(); handleDelete(file) }}
                 >
                   <TrashIcon />

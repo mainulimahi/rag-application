@@ -114,13 +114,8 @@ export default function ChatInput({ onSend, disabled = false }: Props) {
             className={`chat-mic-btn${isListening ? ' recording' : ''}`}
             onClick={toggleMic}
             disabled={disabled}
-            title={
-              micSupported === null
-                ? 'Voice input'
-                : isListening
-                ? 'Stop listening'
-                : 'Voice input'
-            }
+            title={isListening ? 'Stop listening' : 'Voice input'}
+            aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
             type="button"
           >
             <MicIcon active={isListening} />
@@ -132,6 +127,7 @@ export default function ChatInput({ onSend, disabled = false }: Props) {
           onClick={handleSend}
           disabled={disabled || !value.trim()}
           title="Send message"
+          aria-label="Send message"
           type="button"
         >
           <SendIcon />

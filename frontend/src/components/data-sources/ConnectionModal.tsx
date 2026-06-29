@@ -101,10 +101,10 @@ export default function ConnectionModal({ source, onSave, onClose }: Props) {
   }, [onClose])
 
   return (
-    <div className="ds-modal-backdrop" onClick={handleBackdrop} role="dialog" aria-modal="true">
+    <div className="ds-modal-backdrop" onClick={handleBackdrop} role="dialog" aria-modal="true" aria-labelledby="conn-modal-title">
       <div className="ds-modal">
         <div className="ds-modal-header">
-          <h2 className="ds-modal-title">{source ? 'Edit Connection' : 'Add Connection'}</h2>
+          <h2 id="conn-modal-title" className="ds-modal-title">{source ? 'Edit Connection' : 'Add Connection'}</h2>
           <button className="ds-modal-close" onClick={onClose} aria-label="Close">×</button>
         </div>
 
