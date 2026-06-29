@@ -24,26 +24,6 @@ from app.services import duckdb_service
 
 # ── Structured logging ────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)-8s %(name)-30s %(message)s",
-    datefmt="%H:%M:%S",
-)
-
-# Silence SQLAlchemy engine/pool — SQL queries are only visible at DEBUG level.
-for _noisy_logger in (
-    "sqlalchemy.engine",
-    "sqlalchemy.pool",
-    "sqlalchemy.dialects",
-    "httpx",
-    "httpcore",
-    "google_genai",
-    "google.generativeai",
-    "langchain",
-    "langchain_core",
-):
-    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
-
 
 class _EndpointFilter(logging.Filter):
     """Drop uvicorn access-log records for the /health probe."""
@@ -52,13 +32,68 @@ class _EndpointFilter(logging.Filter):
         return "/health" not in record.getMessage()
 
 
-# Silence uvicorn's access log — the log_requests middleware below produces a
-# single clean line per request in our format, avoiding double-logging.
-# The EndpointFilter is added as a belt-and-suspenders guard if the level is
-# temporarily lowered to INFO for debugging.
-_uvicorn_access = logging.getLogger("uvicorn.access")
-_uvicorn_access.setLevel(logging.WARNING)
-_uvicorn_access.addFilter(_EndpointFilter())
+def _configure_app_logging() -> None:
+    """Install exactly one root handler and silence noisy third-party loggers.
+
+    Called at import time (so pre-lifespan startup messages use the right format)
+    and again at lifespan startup. The second call is the critical one: uvicorn
+    runs dictConfig() during its own startup sequence which can install extra
+    handlers on the root logger after our import-time setup, causing every log
+    line to appear twice with two different formats. Explicitly clearing
+    root.handlers before re-adding ours guarantees exactly one handler regardless
+    of what uvicorn has done in between.
+
+    Clearing root.handlers does NOT affect uvicorn's own loggers: uvicorn.*
+    loggers have propagate=False and carry their own StreamHandler instances,
+    so they are unaffected by anything we do to the root logger.
+    """
+    root = logging.getLogger()
+    root.handlers.clear()
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(levelname)-8s %(name)-30s %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    root.addHandler(_handler)
+    root.setLevel(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
+
+    # SQLAlchemy — SQL queries visible only when LOG_LEVEL=debug.
+    # session.py creates the engine with echo=True in local env, which calls
+    # setLevel(INFO) on sqlalchemy.engine. We target both the parent logger and
+    # the actual emitter (sqlalchemy.engine.Engine) so the override is robust.
+    _sa_level = logging.DEBUG if settings.LOG_LEVEL.upper() == "DEBUG" else logging.WARNING
+    for _name in (
+        "sqlalchemy.engine",
+        "sqlalchemy.engine.Engine",
+        "sqlalchemy.pool",
+        "sqlalchemy.dialects",
+    ):
+        logging.getLogger(_name).setLevel(_sa_level)
+
+    # Third-party HTTP/LLM clients — always suppress below WARNING.
+    for _name in (
+        "httpx",
+        "httpcore",
+        "google_genai",
+        "google_genai._api_client",
+        "google.generativeai",
+        "langchain",
+        "langchain_core",
+    ):
+        logging.getLogger(_name).setLevel(logging.WARNING)
+
+    # Health probe — suppress /health pings from uvicorn access log.
+    # Guard against duplicating the filter on repeated calls.
+    _access = logging.getLogger("uvicorn.access")
+    _access.setLevel(logging.WARNING)
+    _access.filters = [f for f in _access.filters if not isinstance(f, _EndpointFilter)]
+    _access.addFilter(_EndpointFilter())
+
+
+# First call: cover log lines emitted before the lifespan runs.
+_configure_app_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +103,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[type-arg]
-    """Startup: clean up any orphaned DuckDB temp files left by a previous crash."""
+    """Startup: re-apply logging config then clean up orphaned DuckDB temp files."""
+    # Second call: runs after uvicorn has finished its own dictConfig setup.
+    # This clears any extra root handlers uvicorn added and reinstalls ours,
+    # eliminating duplicate log lines and ensuring our format is in effect.
+    _configure_app_logging()
     try:
         duckdb_service.cleanup_orphaned_temp_files()
         logger.info("Startup: orphaned DuckDB temp files cleaned")

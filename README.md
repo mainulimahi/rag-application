@@ -22,14 +22,14 @@ An AI-powered document Q&A, web search, and data analysis application. Upload do
 |---|---|
 | Backend | FastAPI (Python 3.12), SQLAlchemy async, Alembic |
 | Database | PostgreSQL 16 + pgvector extension |
-| LLM | Gemini API — `gemini-2.5-flash` (free tier) |
+| LLM | Gemini API — `gemini-2.5-flash` (default, free tier) or Cloudflare Workers AI (optional) |
 | Embeddings | Gemini Embedding API — `gemini-embedding-001`, 768 dimensions (free tier) |
 | Agent | LangGraph |
 | Data analysis | DuckDB — in-process SQL over files and connected databases |
 | Web search | Tavily API (free tier) |
 | Caching | Redis 7 (allkeys-lru, 256 MB) |
 | Email | Resend API (free tier) |
-| Frontend | Next.js 14, TypeScript strict, App Router |
+| Frontend | Next.js 15, TypeScript strict, App Router |
 | Reverse proxy | nginx:alpine — proxy cache for static assets, gzip, security headers |
 | Containers | Docker Compose |
 
@@ -94,9 +94,15 @@ All configuration lives in `.env` (gitignored). Copy `.env.example` to get start
 | `POSTGRES_DB` | Yes | — | Database name |
 | `POSTGRES_HOST` | Yes | `postgres` | `postgres` in Docker; `localhost` for local dev |
 | `POSTGRES_PORT` | No | `5432` | PostgreSQL port |
+| `LLM_PROVIDER` | No | `gemini` | LLM backend: `gemini` or `cloudflare` (embeddings always use Gemini) |
 | `GEMINI_API_KEY` | Yes | — | Google Gemini API key (covers both LLM and embeddings) |
 | `GEMINI_LLM_MODEL` | No | `gemini-2.5-flash` | Gemini model for chat and routing |
 | `GEMINI_EMBEDDING_MODEL` | No | `gemini-embedding-001` | Gemini model for text embeddings |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare only | — | Cloudflare account ID (required when `LLM_PROVIDER=cloudflare`) |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare only | — | Cloudflare API token (required when `LLM_PROVIDER=cloudflare`) |
+| `CLOUDFLARE_MODEL` | No | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Cloudflare model for general chat |
+| `CLOUDFLARE_SQL_MODEL` | No | `@cf/qwen/qwen2.5-coder-32b-instruct` | Cloudflare model for SQL generation |
+| `CLOUDFLARE_ROUTER_MODEL` | No | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Cloudflare model for query routing |
 | `TAVILY_API_KEY` | Yes | — | Tavily API key for web search |
 | `RESEND_API_KEY` | Yes | — | Resend API key for transactional email |
 | `EMAIL_FROM` | No | `onboarding@resend.dev` | Sender address (must be verified domain in production) |
@@ -145,7 +151,7 @@ nginx (port 80)
   │                                    │     ├── retrieval_node     (pgvector search)
   │                                    │     ├── websearch_node     (Tavily API)
   │                                    │     ├── data_analysis_node (DuckDB + LLM SQL gen; results from Redis)
-  │                                    │     └── synthesis_node     (Gemini LLM, streams tokens)
+  │                                    │     └── synthesis_node     (Gemini or Cloudflare LLM via llm_factory, streams tokens)
   │                                    ├── Redis (query cache + doc count cache)
   │                                    └── PostgreSQL + pgvector
   │
@@ -278,6 +284,7 @@ Current migration chain:
 6. `f2a3b4c5d6e7` — email verification fields on users; soft-delete (`deleted_at`) on chat_threads and documents
 7. `g3h4i5j6k7l8` — pinned column on chat_threads
 8. `h4i5j6k7l8m9` — input_tokens and output_tokens on chat_messages
+9. `i5j6k7l8m9n0` — data_sources, data_files, and data_file_schemas tables
 
 ## Deployment Guide
 
